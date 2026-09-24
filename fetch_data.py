@@ -1,5 +1,6 @@
 import os
 import io
+import re
 import json
 import zipfile
 import sqlite3
@@ -11,20 +12,20 @@ from datetime import datetime, timedelta
 DB_NAME = "nse_eod_data.db"
 OVERRIDE_FILE = "manual_adjustments.json"
 
-# Start Date for initial historical backfill (Format: YYYY-MM-DD)
-START_DATE = "2024-01-01"  # Change to "2020-01-01" for a deeper backfill
+# Start Date for backfill
+START_DATE = "2024-01-01"
 
-# HTTP Headers configured with a real browser User-Agent
+# Headers for NSE Requests
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.nseindia.com/all-reports"
+    "Referer": "https://www.nseindia.com/companies-listing/corporate-filings-actions"
 }
 
 
 def init_db(conn):
-    """Initializes tables and manages schema column migrations."""
+    """Initializes schema and tables."""
     cursor = conn.cursor()
 
     cursor.execute('''
@@ -41,11 +42,9 @@ def init_db(conn):
         )
     ''')
 
-    # Migration check: Ensure 'is_index' exists
     cursor.execute("PRAGMA table_info(ohlcv)")
     columns = [row[1] for row in cursor.fetchall()]
     if 'is_index' not in columns:
-        print("[MIGRATION] Adding missing 'is_index' column to ohlcv table...")
         cursor.execute("ALTER TABLE ohlcv ADD COLUMN is_index INTEGER DEFAULT 0")
 
     cursor.execute('''
@@ -63,14 +62,14 @@ def init_db(conn):
 
 
 def generate_date_range(start_date_str):
-    """Generates a list of weekday date strings (YYYY-MM-DD) from start_date to today."""
+    """Generates weekday date strings."""
     start = datetime.strptime(start_date_str, "%Y-%m-%d")
     today = datetime.now()
     date_list = []
 
     current = start
     while current <= today:
-        if current.weekday() < 5:  # Monday to Friday
+        if current.weekday() < 5:
             date_list.append(current.strftime("%Y-%m-%d"))
         current += timedelta(days=1)
 
@@ -78,40 +77,35 @@ def generate_date_range(start_date_str):
 
 
 def fetch_nse_bhavcopy_range(conn, start_date=START_DATE):
-    """Downloads official daily NSE Bhavcopy files directly from NSE endpoints."""
+    """Downloads daily Bhavcopies directly from NSE."""
     session = requests.Session()
     session.headers.update(HEADERS)
 
-    # Establish cookies with standard homepage visit
     try:
         session.get("https://www.nseindia.com", timeout=10)
     except Exception as e:
-        print(f"[WARNING] NSE Session connection error: {e}")
+        print(f"[WARNING] Session connection warning: {e}")
 
     date_list = generate_date_range(start_date)
     cursor = conn.cursor()
     total_added = 0
 
-    print(f"[START] Processing NSE Bhavcopies from {start_date} to today ({len(date_list)} weekdays)...")
+    print(f"[START] Fetching Bhavcopies from {start_date} to present...")
 
     for date_str in date_list:
-        dt = datetime.strptime(date_str, "%Y-%m-%d")
-
-        # Skip if date is already in the database
         cursor.execute("SELECT COUNT(*) FROM ohlcv WHERE date = ?", (date_str,))
         if cursor.fetchone()[0] > 0:
             continue
 
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
         year = dt.strftime("%Y")
         month = dt.strftime("%b").upper()
         day_str = dt.strftime("%d")
         date_udiff = dt.strftime("%Y%m%d")
 
-        # Potential NSE download URL patterns (UDiFF & Legacy Formats)
         urls = [
             f"https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{date_udiff}_F_0000.csv.zip",
-            f"https://archives.nseindia.com/content/historical/EQUITIES/{year}/{month}/cm{day_str}{month}{year}bhav.csv.zip",
-            f"https://www.nseindia.com/content/historical/EQUITIES/{year}/{month}/cm{day_str}{month}{year}bhav.csv.zip"
+            f"https://archives.nseindia.com/content/historical/EQUITIES/{year}/{month}/cm{day_str}{month}{year}bhav.csv.zip"
         ]
 
         downloaded = False
@@ -119,32 +113,22 @@ def fetch_nse_bhavcopy_range(conn, start_date=START_DATE):
             try:
                 res = session.get(url, timeout=10)
                 if res.status_code == 200:
-                    content_type = res.headers.get('Content-Type', '')
-
-                    # Handle Zip Files
-                    if 'zip' in content_type or url.endswith('.zip'):
-                        with zipfile.ZipFile(io.BytesIO(res.content)) as z:
-                            csv_name = z.namelist()[0]
-                            with z.open(csv_name) as f:
-                                df = pd.read_csv(f)
-                    # Handle Plain CSV Files
-                    else:
-                        df = pd.read_csv(io.BytesIO(res.content))
+                    with zipfile.ZipFile(io.BytesIO(res.content)) as z:
+                        csv_name = z.namelist()[0]
+                        with z.open(csv_name) as f:
+                            df = pd.read_csv(f)
 
                     df.columns = [c.strip().upper() for c in df.columns]
 
-                    # Map standard columns across legacy and UDiFF CSV formats
                     symbol_col = 'TCKRSYMB' if 'TCKRSYMB' in df.columns else ('SYMBOL' if 'SYMBOL' in df.columns else None)
                     series_col = 'SCTYSRS' if 'SCTYSRS' in df.columns else ('SERIES' if 'SERIES' in df.columns else None)
 
                     if not symbol_col:
                         continue
 
-                    # Filter for Equity series
                     if series_col:
                         df = df[df[series_col].isin(['EQ', 'BE'])]
 
-                    # Normalize columns
                     df['symbol'] = df[symbol_col]
                     df['open'] = df['OPNPRC'] if 'OPNPRC' in df.columns else df.get('OPEN', 0.0)
                     df['high'] = df['HGHPRC'] if 'HGHPRC' in df.columns else df.get('HIGH', 0.0)
@@ -163,24 +147,96 @@ def fetch_nse_bhavcopy_range(conn, start_date=START_DATE):
 
                     conn.commit()
                     total_added += len(records)
-                    print(f"[SUCCESS] Downloaded Bhavcopy for {date_str}: {len(records)} stocks added.")
+                    print(f"[SUCCESS] Downloaded Bhavcopy for {date_str}: {len(records)} records.")
                     downloaded = True
                     break
-
             except Exception:
                 continue
 
-        if not downloaded:
-            # Silence logging for weekend/holiday dates with no data
-            pass
+    print(f"[COMPLETE] Daily EOD fetch finished. Added {total_added} records.")
 
-    print(f"[COMPLETE] Total EOD records added/updated: {total_added}")
+
+def auto_adjust_splits_and_bonuses(conn):
+    """Fetches NSE corporate actions API and automatically applies split and bonus multipliers."""
+    print("[CORPORATE ACTIONS] Checking NSE API for automated splits and bonuses...")
+    session = requests.Session()
+    session.headers.update(HEADERS)
+
+    try:
+        session.get("https://www.nseindia.com", timeout=10)
+        url = "https://www.nseindia.com/api/corporates-corporateActions?index=equities"
+        res = session.get(url, timeout=12)
+        if res.status_code != 200:
+            print("[WARNING] Could not fetch corporate actions from NSE API.")
+            return
+
+        actions = res.json()
+        cursor = conn.cursor()
+        applied_count = 0
+
+        for item in actions:
+            symbol = item.get("symbol")
+            purpose = item.get("subject", "")
+            ex_date_str = item.get("exDate")
+
+            if not symbol or not ex_date_str or ex_date_str == "-":
+                continue
+
+            try:
+                ex_date = datetime.strptime(ex_date_str, "%d-%b-%Y").strftime("%Y-%m-%d")
+            except Exception:
+                continue
+
+            factor = None
+            action_type = None
+
+            # 1. Parse Splits (e.g., "Face Value Split From Rs 10 To Rs 2" or "Sub-Division... 10 to 1")
+            split_match = re.search(r"rs\.?\s*(\d+)\s*to\s*rs\.?\s*(\d+)", purpose, re.IGNORECASE)
+            if split_match and "split" in purpose.lower() or "sub-division" in purpose.lower():
+                old_fv = float(split_match.group(1))
+                new_fv = float(split_match.group(2))
+                if old_fv > 0 and new_fv > 0:
+                    factor = new_fv / old_fv
+                    action_type = "AUTO_SPLIT"
+
+            # 2. Parse Bonuses (e.g., "Bonus 1:1" or "Bonus Ratio 2:1")
+            bonus_match = re.search(r"bonus.*?\b(\d+)\s*:\s*(\d+)", purpose, re.IGNORECASE)
+            if bonus_match:
+                bonus_shares = float(bonus_match.group(1))
+                held_shares = float(bonus_match.group(2))
+                factor = held_shares / (bonus_shares + held_shares)
+                action_type = "AUTO_BONUS"
+
+            if factor and factor < 1.0:
+                # Store corporate action record
+                cursor.execute('''
+                    INSERT OR IGNORE INTO corporate_actions (symbol, ex_date, purpose, ratio, action_type)
+                    VALUES (?, ?, ?, ?, ?)
+                ''', (symbol, ex_date, purpose, factor, action_type))
+
+                # Check if action was already applied to OHLCV
+                if cursor.rowcount > 0:
+                    cursor.execute('''
+                        UPDATE ohlcv 
+                        SET open = ROUND(open * ?, 2),
+                            high = ROUND(high * ?, 2),
+                            low = ROUND(low * ?, 2),
+                            close = ROUND(close * ?, 2)
+                        WHERE symbol = ? AND date < ? AND is_index = 0
+                    ''', (factor, factor, factor, factor, symbol, ex_date))
+                    applied_count += 1
+                    print(f"[{action_type}] Adjusted {symbol} prior to {ex_date} with factor {factor:.4f}")
+
+        conn.commit()
+        print(f"[SUCCESS] Auto-adjusted {applied_count} split/bonus events.")
+
+    except Exception as e:
+        print(f"[ERROR] Auto corporate action calculation failed: {e}")
 
 
 def apply_manual_overrides(conn):
-    """Applies retroactive price adjustments from manual_adjustments.json."""
+    """Applies manual adjustments (Demergers, Rights Issues, etc.)."""
     if not os.path.exists(OVERRIDE_FILE):
-        print(f"[NOTE] No {OVERRIDE_FILE} file found. Skipping overrides.")
         return
 
     try:
@@ -210,12 +266,12 @@ def apply_manual_overrides(conn):
                         WHERE symbol = ? AND date < ? AND is_index = 0
                     ''', (factor, factor, factor, factor, symbol, ex_date))
 
-                    print(f"[MANUAL ADJUSTMENT] Applied factor {factor} for {symbol} prior to {ex_date}")
+                    print(f"[MANUAL OVERRIDE] Applied factor {factor} for {symbol} prior to {ex_date}")
 
         conn.commit()
-        print("[SUCCESS] Corporate action manual overrides applied.")
+        print("[SUCCESS] Manual corporate action overrides applied.")
     except Exception as e:
-        print(f"[ERROR] Failed applying overrides: {e}")
+        print(f"[ERROR] Manual overrides failed: {e}")
 
 
 def main():
@@ -224,6 +280,7 @@ def main():
 
     init_db(conn)
     fetch_nse_bhavcopy_range(conn)
+    auto_adjust_splits_and_bonuses(conn)
     apply_manual_overrides(conn)
 
     conn.close()
