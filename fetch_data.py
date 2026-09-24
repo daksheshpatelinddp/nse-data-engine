@@ -9,7 +9,7 @@ OVERRIDE_FILE = "manual_adjustments.json"
 
 
 def init_db(conn):
-    """Initializes the database schema if tables do not exist."""
+    """Initializes the database schema if tables do not exist and handles schema migrations."""
     cursor = conn.cursor()
 
     # Create OHLCV Table
@@ -26,6 +26,13 @@ def init_db(conn):
             PRIMARY KEY (symbol, date)
         )
     ''')
+
+    # Migration Check: Ensure 'is_index' column exists in existing databases
+    cursor.execute("PRAGMA table_info(ohlcv)")
+    columns = [row[1] for row in cursor.fetchall()]
+    if 'is_index' not in columns:
+        print("[MIGRATION] Adding missing 'is_index' column to existing ohlcv table...")
+        cursor.execute("ALTER TABLE ohlcv ADD COLUMN is_index INTEGER DEFAULT 0")
 
     # Create Corporate Actions Log Table
     cursor.execute('''
@@ -89,7 +96,7 @@ def main():
     """Main execution pipeline."""
     conn = sqlite3.connect(DB_NAME)
 
-    # Initialize tables
+    # Initialize tables and migration check
     init_db(conn)
 
     # Apply Manual Corporate Actions Adjustments
