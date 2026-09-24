@@ -178,22 +178,69 @@ def fetch_nse_bhavcopy_range(conn, start_date=START_DATE):
 
 
 def parse_purpose_multipliers(purpose_str, row_data):
-    """Extracts all multipliers (splits, bonuses, rights) present inside a single PURPOSE string."""
+    """Robust parser for splits, demergers, bonuses, and rights across standard NSE formats."""
     factors = []
     p_lower = str(purpose_str).lower()
 
-    # 1. Check for Stock Splits (e.g., "Fv Split Rs.10/- To Rs.5/", "Split Us 64 Into 2 Parts")
-    split_match = re.search(r"(?:fv\s*)?split.*?\b(\d+)\s*(?:/-)?\s*to\s*(?:re\.?|rs\.?)?\s*(\d+)", p_lower)
-    if not split_match:
-        split_match = re.search(r"rs\.?\s*(\d+)\s*to\s*rs\.?\s*(\d+)", p_lower)
+    # --- 1. STOCK SPLITS & SUB-DIVISIONS ---
+    # Case A: Check direct columns if present in split.csv (e.g. OLD_FV and NEW_FV)
+    old_fv = row_data.get('OLD_FV', row_data.get('FACE_VALUE', None))
+    new_fv = row_data.get('NEW_FV', row_data.get('NEW_FACE_VALUE', None))
+    
+    try:
+        if old_fv and new_fv and float(old_fv) > float(new_fv) > 0:
+            factors.append(("SPLIT", float(new_fv) / float(old_fv)))
+    except (ValueError, TypeError):
+        pass
 
-    if split_match:
-        old_fv = float(split_match.group(1))
-        new_fv = float(split_match.group(2))
-        if old_fv > new_fv > 0:
-            factors.append(("SPLIT", new_fv / old_fv))
+    if not factors:
+        # Case B: Regex for "Rs 10/- To Rs 2/-" or "From Rs 10 To Re 1" or "10 To 5"
+        split_match = re.search(r"(?:from\s*)?(?:re\.?|rs\.?)?\s*(\d+(?:\.\d+)?)\s*(?:/-)?\s*to\s*(?:re\.?|rs\.?)?\s*(\d+(?:\.\d+)?)", p_lower)
+        if split_match:
+            try:
+                v1 = float(split_match.group(1))
+                v2 = float(split_match.group(2))
+                if v1 > v2 > 0:
+                    factors.append(("SPLIT", v2 / v1))
+            except ValueError:
+                pass
 
-    # 2. Check for Bonus Issues (e.g., "Bonus 1:1", "Bonus - 1:5", "Div-30%/Bonus 1:1")
+    if not factors and ("split" in p_lower or "sub-division" in p_lower or "sub division" in p_lower):
+        # Case C: Generic split numbers like "1:5" or "10:1"
+        gen_match = re.search(r"(\d+)\s*:\s*(\d+)", p_lower)
+        if gen_match:
+            try:
+                n1 = float(gen_match.group(1))
+                n2 = float(gen_match.group(2))
+                if n1 < n2 and n2 > 0:
+                    factors.append(("SPLIT", n1 / n2))
+                elif n1 > n2 and n1 > 0:
+                    factors.append(("SPLIT", n2 / n1))
+            except ValueError:
+                pass
+
+    # --- 2. DEMERGERS & SPINFOFFS ---
+    if "demerger" in p_lower or "spin" in p_lower or "demerg" in p_lower:
+        # Check direct ratio/factor column
+        for col_name in ["FACTOR", "RATIO", "DEMERGER_RATIO"]:
+            if col_name in row_data:
+                try:
+                    f_val = float(row_data[col_name])
+                    if 0.0 < f_val < 1.0:
+                        factors.append(("DEMERGER", f_val))
+                        break
+                except (ValueError, TypeError):
+                    pass
+        
+        # Check percentage inside purpose (e.g., "Demerger - 15%" -> factor is 0.85)
+        if not any(f[0] == "DEMERGER" for f in factors):
+            pct_match = re.search(r"(\d+(?:\.\d+)?)\s*%", p_lower)
+            if pct_match:
+                pct = float(pct_match.group(1))
+                if 0 < pct < 100:
+                    factors.append(("DEMERGER", (100.0 - pct) / 100.0))
+
+    # --- 3. BONUSES ---
     bonus_match = re.search(r"bonus\s*(?:-\s*)?\b(\d+)\s*:\s*(\d+)", p_lower)
     if bonus_match:
         bonus_shares = float(bonus_match.group(1))
@@ -201,24 +248,13 @@ def parse_purpose_multipliers(purpose_str, row_data):
         if bonus_shares + held_shares > 0:
             factors.append(("BONUS", held_shares / (bonus_shares + held_shares)))
 
-    # 3. Check for Rights Issues (e.g., "Rights - 1:2", "Rights-35:12")
+    # --- 4. RIGHTS ISSUES ---
     rights_match = re.search(r"rights\s*(?:-\s*)?\b(\d+)\s*:\s*(\d+)", p_lower)
     if rights_match:
         rights_shares = float(rights_match.group(1))
         held_shares = float(rights_match.group(2))
         if rights_shares + held_shares > 0:
             factors.append(("RIGHTS", held_shares / (rights_shares + held_shares)))
-
-    # 4. Fallback for FACTOR/RATIO columns in Demerger CSVs
-    if not factors:
-        for col_name in ["FACTOR", "RATIO"]:
-            if col_name in row_data:
-                try:
-                    f_val = float(row_data[col_name])
-                    if 0.0 < f_val < 1.0:
-                        factors.append(("DEMERGER_OR_CUSTOM", f_val))
-                except (ValueError, TypeError):
-                    pass
 
     return factors
 
@@ -245,7 +281,6 @@ def process_all_corporate_actions(conn):
                 if not symbol or symbol in ["nan", ""] or not ex_date_raw or ex_date_raw in ["-", "nan", ""]:
                     continue
 
-                # Support multiple date formats (e.g. "25-Oct-2002", "2002-10-25", "25/10/2002")
                 try:
                     ex_date = pd.to_datetime(ex_date_raw, dayfirst=True).strftime("%Y-%m-%d")
                 except Exception:
