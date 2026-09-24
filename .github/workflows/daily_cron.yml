@@ -32,6 +32,21 @@ jobs:
         python -m pip install --upgrade pip
         pip install pandas requests
 
+    - name: Clean Corrupted Databases
+      run: |
+        python -c "
+        import os, sqlite3
+        for f in os.listdir('.'):
+            if f.endswith('.db'):
+                try:
+                    conn = sqlite3.connect(f)
+                    conn.execute('PRAGMA quick_check;')
+                    conn.close()
+                except Exception as e:
+                    print(f'Removing corrupted file: {f}')
+                    os.remove(f)
+        "
+
     - name: Run Fetcher Script
       run: python fetch_data.py
       env:
