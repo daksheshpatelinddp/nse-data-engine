@@ -2,7 +2,7 @@ name: Daily NSE Fetcher
 
 on:
   schedule:
-    - cron: '0 13 * * 1-5' # Runs Monday through Friday
+    - cron: '0 13 * * 1-5'
   workflow_dispatch:
 
 jobs:
@@ -10,14 +10,8 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-    - name: Checkout Repository with LFS
+    - name: Checkout Repository
       uses: actions/checkout@v4
-      with:
-        lfs: true
-
-    - name: Install Git LFS
-      run: |
-        git lfs install
 
     - name: Set up Python
       uses: actions/setup-python@v4
@@ -33,13 +27,13 @@ jobs:
       run: python fetch_data.py
       env:
         START_DATE: '2023-12-01'
+        END_DATE: ''  # Leave blank for today's date, or specify e.g. '2026-09-25'
 
-    - name: Commit and Push Updated Database
+    - name: Commit and Push Updated Databases
       run: |
         git config --global user.name "GitHub Actions Bot"
         git config --global user.email "actions@github.com"
-        git lfs track "*.db"
-        git add .gitattributes nse_eod_data.db
-        git commit -m "Automated update: NSE Bhavcopy EOD Data" || exit 0
+        git add nse_*.db
+        git commit -m "Automated update: Yearly NSE Databases" || exit 0
         git pull --rebase origin main
         git push origin main
