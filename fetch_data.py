@@ -12,16 +12,22 @@ from datetime import datetime, timedelta
 DB_NAME = "nse_eod_data.db"
 OVERRIDE_FILE = "manual_adjustments.json"
 
-# Dynamic Environment Variables passed from daily_cron.yml
-START_DATE = os.getenv("START_DATE", "2023-12-01")
-END_DATE_ENV = os.getenv("END_DATE", "")
+# Input Corporate Action CSV files
+CA_FILES = ["bonus.csv", "split.csv", "demerger.csv", "rights.csv"]
 
-# Standard Browser Headers to bypass NSE anti-scraping
+# Clean date inputs from environment variables
+raw_start = os.getenv("START_DATE", "2023-12-01")
+START_DATE = raw_start.replace("'", "").replace('"', '').strip()
+
+raw_end = os.getenv("END_DATE", "")
+END_DATE_ENV = raw_end.replace("'", "").replace('"', '').strip()
+
+# Headers for NSE Requests
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.nseindia.com/companies-listing/corporate-filings-actions"
+    "Referer": "https://www.nseindia.com"
 }
 
 
@@ -63,21 +69,28 @@ def init_db(conn):
 
 
 def get_end_date():
-    """Determines the target end date based on environment variable or current date."""
-    if END_DATE_ENV and len(END_DATE_ENV.strip()) == 10:
-        return datetime.strptime(END_DATE_ENV.strip(), "%Y-%m-%d")
+    """Determines target end date based on environment variable or current date."""
+    if END_DATE_ENV and len(END_DATE_ENV) == 10:
+        try:
+            return datetime.strptime(END_DATE_ENV, "%Y-%m-%d")
+        except ValueError:
+            pass
     return datetime.now()
 
 
 def generate_date_range(start_date_str):
     """Generates weekday date strings from start_date_str to target end date."""
-    start = datetime.strptime(start_date_str, "%Y-%m-%d")
+    try:
+        start = datetime.strptime(start_date_str, "%Y-%m-%d")
+    except ValueError:
+        start = datetime.strptime("2023-12-01", "%Y-%m-%d")
+
     target_end = get_end_date()
     date_list = []
 
     current = start
     while current <= target_end:
-        if current.weekday() < 5:  # Monday to Friday
+        if current.weekday() < 5:  # Monday through Friday
             date_list.append(current.strftime("%Y-%m-%d"))
         current += timedelta(days=1)
 
@@ -101,7 +114,6 @@ def fetch_nse_bhavcopy_range(conn, start_date=START_DATE):
     print(f"[START] Fetching Bhavcopies from {start_date} to present ({len(date_list)} weekdays)...")
 
     for date_str in date_list:
-        # Fast skipping: Check if daily data already exists in database
         cursor.execute("SELECT COUNT(*) FROM ohlcv WHERE date = ?", (date_str,))
         if cursor.fetchone()[0] > 0:
             continue
@@ -165,100 +177,112 @@ def fetch_nse_bhavcopy_range(conn, start_date=START_DATE):
     print(f"[COMPLETE] Daily EOD fetch finished. Total new records added: {total_added}")
 
 
-def auto_adjust_splits_and_bonuses(conn, start_date=START_DATE):
-    """Fetches full historical corporate action data from START_DATE to today and applies split/bonus multipliers."""
-    dt_start = datetime.strptime(start_date, "%Y-%m-%d")
-    from_date_str = dt_start.strftime("%d-%m-%Y")
-    to_date_str = get_end_date().strftime("%d-%m-%Y")
+def parse_purpose_multipliers(purpose_str, row_data):
+    """Extracts all multipliers (splits, bonuses, rights) present inside a single PURPOSE string."""
+    factors = []
+    p_lower = purpose_str.lower()
 
-    print(f"[CORPORATE ACTIONS] Fetching historical Splits & Bonuses from {from_date_str} to {to_date_str}...")
+    # 1. Check for Stock Splits (e.g., "Fv Split Rs.10/- To Rs.5/", "Split Us 64 Into 2 Parts")
+    split_match = re.search(r"(?:fv\s*)?split.*?\b(\d+)\s*(?:/-)?\s*to\s*(?:re\.?|rs\.?)?\s*(\d+)", p_lower)
+    if not split_match:
+        split_match = re.search(r"rs\.?\s*(\d+)\s*to\s*rs\.?\s*(\d+)", p_lower)
 
-    session = requests.Session()
-    session.headers.update(HEADERS)
+    if split_match:
+        old_fv = float(split_match.group(1))
+        new_fv = float(split_match.group(2))
+        if old_fv > new_fv > 0:
+            factors.append(("SPLIT", new_fv / old_fv))
 
-    url = f"https://www.nseindia.com/api/corporate-actions?index=equities&from_date={from_date_str}&to_date={to_date_str}"
+    # 2. Check for Bonus Issues (e.g., "Bonus 1:1", "Bonus - 1:5")
+    bonus_match = re.search(r"bonus\s*(?:-\s*)?\b(\d+)\s*:\s*(\d+)", p_lower)
+    if bonus_match:
+        bonus_shares = float(bonus_match.group(1))
+        held_shares = float(bonus_match.group(2))
+        if bonus_shares + held_shares > 0:
+            factors.append(("BONUS", held_shares / (bonus_shares + held_shares)))
 
-    try:
-        session.get("https://www.nseindia.com", timeout=10)
-        res = session.get(url, timeout=15)
+    # 3. Check for Rights Issues (e.g., "Rights - 1:2", "Rights-35:12")
+    rights_match = re.search(r"rights\s*(?:-\s*)?\b(\d+)\s*:\s*(\d+)", p_lower)
+    if rights_match:
+        rights_shares = float(rights_match.group(1))
+        held_shares = float(rights_match.group(2))
+        if rights_shares + held_shares > 0:
+            factors.append(("RIGHTS", held_shares / (rights_shares + held_shares)))
 
-        if res.status_code != 200:
-            print(f"[WARNING] Could not fetch corporate actions endpoint (Status: {res.status_code}).")
-            return
+    # 4. Fallback to direct FACTOR/RATIO columns for demergers or pre-calculated rows
+    if not factors:
+        for col_name in ["FACTOR", "RATIO"]:
+            if col_name in row_data:
+                try:
+                    f_val = float(row_data[col_name])
+                    if 0.0 < f_val < 1.0:
+                        factors.append(("DEMERGER_OR_CUSTOM", f_val))
+                except (ValueError, TypeError):
+                    pass
 
-        actions = res.json()
-        cursor = conn.cursor()
-        applied_count = 0
+    return factors
 
-        for item in actions:
-            symbol = item.get("symbol") or item.get("SYMBOL")
-            purpose = item.get("subject") or item.get("PURPOSE") or ""
-            ex_date_str = item.get("exDate") or item.get("EX_DATE")
 
-            if not symbol or not ex_date_str or ex_date_str in ["-", ""]:
-                continue
+def process_all_corporate_actions(conn):
+    """Processes all uploaded corporate action CSV files cleanly."""
+    cursor = conn.cursor()
+    applied_count = 0
 
-            try:
-                ex_date = pd.to_datetime(ex_date_str).strftime("%Y-%m-%d")
-            except Exception:
-                continue
+    for file_path in CA_FILES:
+        if not os.path.exists(file_path):
+            continue
 
-            factor = None
-            action_type = None
-            purpose_lower = purpose.lower()
+        print(f"[PROCESSING] Reading '{file_path}'...")
+        try:
+            df = pd.read_csv(file_path)
+            df.columns = [c.strip().upper().replace(" ", "_") for c in df.columns]
 
-            # 1. Parse Splits (e.g., "From Rs 2/- Per Share To Re 1/-", "From Rs 10 To Rs 2")
-            if "split" in purpose_lower or "sub-division" in purpose_lower:
-                split_match = re.search(r"(\d+)\s*/?-\s*to\s*(?:re\.?|rs\.?)?\s*(\d+)", purpose_lower)
-                if not split_match:
-                    split_match = re.search(r"rs\.?\s*(\d+)\s*to\s*rs\.?\s*(\d+)", purpose_lower)
+            for _, row in df.iterrows():
+                symbol = str(row.get("SYMBOL", "")).strip()
+                ex_date_raw = str(row.get("EX_DATE", row.get("EXDATE", ""))).strip()
+                purpose = str(row.get("PURPOSE", "")).strip()
 
-                if split_match:
-                    old_fv = float(split_match.group(1))
-                    new_fv = float(split_match.group(2))
-                    if old_fv > 0 and new_fv > 0 and new_fv < old_fv:
-                        factor = new_fv / old_fv
-                        action_type = "AUTO_SPLIT"
+                if not symbol or symbol == "nan" or not ex_date_raw or ex_date_raw in ["-", "nan", ""]:
+                    continue
 
-            # 2. Parse Bonuses (e.g., "Bonus 1:1", "Bonus 1:2")
-            if "bonus" in purpose_lower:
-                bonus_match = re.search(r"bonus.*?\b(\d+)\s*:\s*(\d+)", purpose_lower)
-                if bonus_match:
-                    bonus_shares = float(bonus_match.group(1))
-                    held_shares = float(bonus_match.group(2))
-                    if held_shares + bonus_shares > 0:
-                        factor = held_shares / (bonus_shares + held_shares)
-                        action_type = "AUTO_BONUS"
+                try:
+                    ex_date = pd.to_datetime(ex_date_raw).strftime("%Y-%m-%d")
+                except Exception:
+                    continue
 
-            if factor and factor < 1.0:
-                cursor.execute('''
-                    INSERT OR IGNORE INTO corporate_actions (symbol, ex_date, purpose, ratio, action_type)
-                    VALUES (?, ?, ?, ?, ?)
-                ''', (symbol, ex_date, purpose, factor, action_type))
+                row_dict = row.to_dict()
+                events = parse_purpose_multipliers(purpose, row_dict)
 
-                if cursor.rowcount > 0:
-                    cursor.execute('''
-                        UPDATE ohlcv 
-                        SET open = ROUND(open * ?, 2),
-                            high = ROUND(high * ?, 2),
-                            low = ROUND(low * ?, 2),
-                            close = ROUND(close * ?, 2)
-                        WHERE symbol = ? AND date < ? AND is_index = 0
-                    ''', (factor, factor, factor, factor, symbol, ex_date))
+                for action_type, factor in events:
+                    if 0.0 < factor < 1.0:
+                        cursor.execute('''
+                            INSERT OR IGNORE INTO corporate_actions (symbol, ex_date, purpose, ratio, action_type)
+                            VALUES (?, ?, ?, ?, ?)
+                        ''', (symbol, ex_date, purpose, factor, action_type))
 
-                    if cursor.rowcount > 0:
-                        applied_count += 1
-                        print(f"[{action_type}] Adjusted {symbol} prior to {ex_date} with factor {factor:.4f}")
+                        if cursor.rowcount > 0:
+                            cursor.execute('''
+                                UPDATE ohlcv 
+                                SET open = ROUND(open * ?, 2),
+                                    high = ROUND(high * ?, 2),
+                                    low = ROUND(low * ?, 2),
+                                    close = ROUND(close * ?, 2)
+                                WHERE symbol = ? AND date < ? AND is_index = 0
+                            ''', (factor, factor, factor, factor, symbol, ex_date))
 
-        conn.commit()
-        print(f"[SUCCESS] Auto-adjusted {applied_count} split/bonus events.")
+                            if cursor.rowcount > 0:
+                                applied_count += 1
+                                print(f"[{action_type}] Adjusted {symbol} prior to {ex_date} with factor {factor:.4f} ({purpose})")
 
-    except Exception as e:
-        print(f"[ERROR] Auto corporate action calculation failed: {e}")
+        except Exception as e:
+            print(f"[ERROR] Failed to process {file_path}: {e}")
+
+    conn.commit()
+    print(f"[SUCCESS] Corporate action CSV batch processing complete ({applied_count} actions applied).")
 
 
 def apply_manual_overrides(conn):
-    """Applies manual adjustments from manual_adjustments.json."""
+    """Applies custom adjustments from manual_adjustments.json."""
     if not os.path.exists(OVERRIDE_FILE):
         return
 
@@ -267,6 +291,7 @@ def apply_manual_overrides(conn):
             overrides = json.load(f)
 
         cursor = conn.cursor()
+        applied_count = 0
 
         for symbol, events in overrides.items():
             for event in events:
@@ -280,21 +305,23 @@ def apply_manual_overrides(conn):
                         VALUES (?, ?, ?, ?, 'MANUAL_OVERRIDE')
                     ''', (symbol, ex_date, purpose, factor))
 
-                    cursor.execute('''
-                        UPDATE ohlcv 
-                        SET open = ROUND(open * ?, 2),
-                            high = ROUND(high * ?, 2),
-                            low = ROUND(low * ?, 2),
-                            close = ROUND(close * ?, 2)
-                        WHERE symbol = ? AND date < ? AND is_index = 0
-                    ''', (factor, factor, factor, factor, symbol, ex_date))
+                    if cursor.rowcount > 0:
+                        cursor.execute('''
+                            UPDATE ohlcv 
+                            SET open = ROUND(open * ?, 2),
+                                high = ROUND(high * ?, 2),
+                                low = ROUND(low * ?, 2),
+                                close = ROUND(close * ?, 2)
+                            WHERE symbol = ? AND date < ? AND is_index = 0
+                        ''', (factor, factor, factor, factor, symbol, ex_date))
 
-                    print(f"[MANUAL OVERRIDE] Applied factor {factor} for {symbol} prior to {ex_date}")
+                        if cursor.rowcount > 0:
+                            applied_count += 1
 
         conn.commit()
-        print("[SUCCESS] Manual corporate action overrides applied.")
+        print(f"[SUCCESS] Manual overrides applied ({applied_count} events).")
     except Exception as e:
-        print(f"[ERROR] Manual overrides failed: {e}")
+        print(f"[ERROR] Applying manual corporate action overrides failed: {e}")
 
 
 def main():
@@ -303,7 +330,7 @@ def main():
 
     init_db(conn)
     fetch_nse_bhavcopy_range(conn, start_date=START_DATE)
-    auto_adjust_splits_and_bonuses(conn, start_date=START_DATE)
+    process_all_corporate_actions(conn)
     apply_manual_overrides(conn)
 
     conn.close()
