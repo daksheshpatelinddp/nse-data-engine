@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 OVERRIDE_FILE = "manual_adjustments.json"
 CA_FILES = ["bonus.csv", "split.csv", "demerger.csv", "rights.csv"]
 
-raw_start = os.getenv("START_DATE", "2023-12-01")
+raw_start = os.getenv("START_DATE", "2000-01-01")
 START_DATE = raw_start.replace("'", "").replace('"', '').strip()
 
 raw_end = os.getenv("END_DATE", "")
@@ -25,7 +25,7 @@ HEADERS = {
     "Referer": "https://www.nseindia.com"
 }
 
-# --- MULTI-DATABASE ROUTER ---
+# Cache for active yearly database connections
 db_connections = {}
 
 def get_db_connection(year_str):
@@ -65,7 +65,7 @@ def get_db_connection(year_str):
 
 
 def close_all_databases():
-    """Flushes and closes all open database connections."""
+    """Flushes and cleanly closes all open database connections."""
     for name, conn in db_connections.items():
         try:
             conn.execute("PRAGMA wal_checkpoint(FULL);")
@@ -80,7 +80,7 @@ def generate_date_range(start_date_str):
     try:
         start = datetime.strptime(start_date_str, "%Y-%m-%d")
     except ValueError:
-        start = datetime.strptime("2023-12-01", "%Y-%m-%d")
+        start = datetime.strptime("2000-01-01", "%Y-%m-%d")
 
     target_end = datetime.now()
     if END_DATE_ENV and len(END_DATE_ENV) == 10:
@@ -92,7 +92,7 @@ def generate_date_range(start_date_str):
     date_list = []
     current = start
     while current <= target_end:
-        if current.weekday() < 5:
+        if current.weekday() < 5:  # Monday to Friday
             date_list.append(current.strftime("%Y-%m-%d"))
         current += timedelta(days=1)
 
@@ -112,7 +112,7 @@ def fetch_nse_bhavcopy_range(start_date=START_DATE):
     date_list = generate_date_range(start_date)
     total_added = 0
 
-    print(f"[START] Fetching Bhavcopies from {start_date} to present across yearly databases...")
+    print(f"[START] Fetching Bhavcopies from {start_date} to present into yearly databases...")
 
     for date_str in date_list:
         year_str = date_str[:4]
@@ -172,65 +172,51 @@ def fetch_nse_bhavcopy_range(start_date=START_DATE):
 
                     conn.commit()
                     total_added += len(records)
-                    print(f"[SUCCESS] Downloaded Bhavcopy for {date_str} -> nse_{year_str}.db ({len(records)} records)")
+                    print(f"[SUCCESS] Downloaded {date_str} -> nse_{year_str}.db ({len(records)} records)")
                     break
             except Exception:
                 continue
 
-    print(f"[COMPLETE] EOD fetch finished. Total new records added: {total_added}")
+    print(f"[COMPLETE] EOD fetch finished. Added {total_added} records.")
 
 
-def parse_split_ratio(purpose_str, row_tuple):
-    """Deep inspection parser for stock splits in NSE exports."""
+def extract_split_ratio(purpose_str, row_dict):
+    """Reliably extracts stock split factors from NSE split.csv exports."""
     p_lower = str(purpose_str).lower().strip()
 
-    # Pattern 1: "Face Value Split From Rs 10/- To Rs 2/-" or "Fv Split Rs 10 To Re 1"
-    m1 = re.search(r"(?:from|rs|re|\.|\s)*(\d+(?:\.\d+)?)\s*(?:/-)?\s*to\s*(?:rs|re|\.|\s)*(\d+(?:\.\d+)?)", p_lower)
-    if m1:
+    # Pattern A: Matches "Rs.10/- To Re.1/-", "10 To 2", "Rs 10 To Rs 1", "Fv Split 10 To 5"
+    m = re.search(r"(?:rs|re|\.|\s)*(\d+(?:\.\d+)?)\s*(?:/-)?\s*to\s*(?:rs|re|\.|\s)*(\d+(?:\.\d+)?)", p_lower)
+    if m:
         try:
-            v1 = float(m1.group(1))
-            v2 = float(m1.group(2))
+            v1, v2 = float(m.group(1)), float(m.group(2))
             if v1 > v2 > 0:
                 return v2 / v1
         except ValueError:
             pass
 
-    # Pattern 2: Extract all numeric components in text (e.g., "Split 10 to 2" or "Split 10 2")
-    numbers = re.findall(r"\b\d+(?:\.\d+)?\b", p_lower)
-    if len(numbers) >= 2:
+    # Pattern B: Direct Face Value column matching if PURPOSE text doesn't contain numeric values
+    old_fv = row_dict.get('FACE_VALUE', row_dict.get('FACEVALUE', row_dict.get('OLD_FV', None)))
+    new_fv = row_dict.get('NEW_FACE_VALUE', row_dict.get('NEW_FV', row_dict.get('NEW_FACEVALUE', None)))
+
+    if old_fv is not None and new_fv is not None:
         try:
-            nums = [float(n) for n in numbers]
-            if nums[0] > nums[1] > 0:
-                return nums[1] / nums[0]
-        except ValueError:
+            v1, v2 = float(old_fv), float(new_fv)
+            if v1 > v2 > 0:
+                return v2 / v1
+        except (ValueError, TypeError):
             pass
-
-    # Pattern 3: Scan raw row values for numbers if purpose text didn't match
-    row_nums = []
-    for val in row_tuple:
-        try:
-            v = float(str(val).strip())
-            if 0.1 <= v <= 1000:
-                row_nums.append(v)
-        except ValueError:
-            continue
-
-    if len(row_nums) >= 2:
-        old_v, new_v = row_nums[0], row_nums[1]
-        if old_v > new_v > 0:
-            return new_v / old_v
 
     return None
 
 
-def parse_purpose_multipliers(purpose_str, row_tuple):
-    """Parses splits, demergers, bonuses, and rights."""
+def parse_purpose_multipliers(purpose_str, row_dict):
+    """Processes corporate action types (Splits, Demergers, Bonuses, Rights)."""
     factors = []
     p_lower = str(purpose_str).lower()
 
-    # 1. SPLIT
-    if "split" in p_lower or "sub-division" in p_lower or "sub division" in p_lower or "subdivision" in p_lower:
-        factor = parse_split_ratio(purpose_str, row_tuple)
+    # 1. SPLIT (Matches "split", "sub-division", "subdivision", "fv", or "face value")
+    if any(k in p_lower for k in ["split", "sub-division", "sub division", "subdivision", "fv", "face value"]):
+        factor = extract_split_ratio(purpose_str, row_dict)
         if factor and 0.0 < factor < 1.0:
             factors.append(("SPLIT", factor))
 
@@ -262,8 +248,7 @@ def parse_purpose_multipliers(purpose_str, row_tuple):
 
 
 def apply_factor_across_all_dbs(symbol, ex_date, factor, purpose, action_type):
-    """Applies a split/adjustment multiplier to ALL yearly databases for dates < ex_date."""
-    # Find all year databases present in working dir
+    """Applies adjustments across all existing nse_YYYY.db files for prices prior to ex_date."""
     db_files = [f for f in os.listdir(".") if f.startswith("nse_") and f.endswith(".db")]
     
     for db_file in db_files:
@@ -289,7 +274,6 @@ def apply_factor_across_all_dbs(symbol, ex_date, factor, purpose, action_type):
 
 
 def process_all_corporate_actions():
-    """Processes corporate action CSV files."""
     applied_count = 0
 
     for file_path in CA_FILES:
@@ -298,7 +282,6 @@ def process_all_corporate_actions():
 
         print(f"[PROCESSING] Reading '{file_path}'...")
         try:
-            # Load CSV without strict headers to catch all column formats
             df = pd.read_csv(file_path, skipinitialspace=True)
             df.columns = [str(c).strip().upper().replace(" ", "_") for c in df.columns]
 
@@ -315,8 +298,8 @@ def process_all_corporate_actions():
                 except Exception:
                     continue
 
-                row_tuple = tuple(row.values)
-                events = parse_purpose_multipliers(purpose, row_tuple)
+                row_dict = row.to_dict()
+                events = parse_purpose_multipliers(purpose, row_dict)
 
                 for action_type, factor in events:
                     if 0.0 < factor < 1.0:
@@ -327,11 +310,10 @@ def process_all_corporate_actions():
         except Exception as e:
             print(f"[ERROR] Failed to process {file_path}: {e}")
 
-    print(f"[SUCCESS] Corporate action CSV batch processing complete ({applied_count} actions applied).")
+    print(f"[SUCCESS] Corporate action batch processing complete ({applied_count} actions applied).")
 
 
 def apply_manual_overrides():
-    """Applies custom adjustments from manual_adjustments.json across databases."""
     if not os.path.exists(OVERRIDE_FILE):
         return
 
