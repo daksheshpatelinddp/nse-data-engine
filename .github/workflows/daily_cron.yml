@@ -2,8 +2,17 @@ name: Daily NSE Fetcher
 
 on:
   schedule:
-    - cron: '0 13 * * 1-5'
+    - cron: '0 13 * * 1-5' # Runs automatically Monday to Friday
   workflow_dispatch:
+    inputs:
+      start_date:
+        description: 'Start Date (YYYY-MM-DD)'
+        required: false
+        default: '2000-01-01'
+      end_date:
+        description: 'End Date (YYYY-MM-DD)'
+        required: false
+        default: ''
 
 jobs:
   build:
@@ -26,8 +35,8 @@ jobs:
     - name: Run Fetcher Script
       run: python fetch_data.py
       env:
-        START_DATE: '2023-12-01'
-        END_DATE: ''  # Leave blank for today's date, or specify e.g. '2026-09-25'
+        START_DATE: ${{ inputs.start_date || '2000-01-01' }}
+        END_DATE: ${{ inputs.end_date || '' }}
 
     - name: Commit and Push Updated Databases
       run: |
