@@ -8,21 +8,16 @@ import pandas as pd
 import requests
 from datetime import datetime, timedelta
 
-# Database & file configurations
-DB_NAME = "nse_eod_data.db"
+# Config
 OVERRIDE_FILE = "manual_adjustments.json"
-
-# Input Corporate Action CSV files
 CA_FILES = ["bonus.csv", "split.csv", "demerger.csv", "rights.csv"]
 
-# Clean date inputs from environment variables
 raw_start = os.getenv("START_DATE", "2023-12-01")
 START_DATE = raw_start.replace("'", "").replace('"', '').strip()
 
 raw_end = os.getenv("END_DATE", "")
 END_DATE_ENV = raw_end.replace("'", "").replace('"', '').strip()
 
-# Headers for NSE Requests
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -30,52 +25,54 @@ HEADERS = {
     "Referer": "https://www.nseindia.com"
 }
 
+# --- MULTI-DATABASE ROUTER ---
+db_connections = {}
 
-def init_db(conn):
-    """Initializes schema and creates required SQLite tables."""
-    cursor = conn.cursor()
+def get_db_connection(year_str):
+    """Returns or creates a connection for a specific yearly SQLite database file."""
+    db_name = f"nse_{year_str}.db"
+    if db_name not in db_connections:
+        conn = sqlite3.connect(db_name)
+        cursor = conn.cursor()
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS ohlcv (
+                symbol TEXT,
+                date TEXT,
+                open REAL,
+                high REAL,
+                low REAL,
+                close REAL,
+                volume INTEGER,
+                is_index INTEGER DEFAULT 0,
+                PRIMARY KEY (symbol, date)
+            )
+        ''')
+        
+        cursor.execute('''
+            CREATE TABLE IF NOT EXISTS corporate_actions (
+                symbol TEXT,
+                ex_date TEXT,
+                purpose TEXT,
+                ratio REAL,
+                action_type TEXT,
+                PRIMARY KEY (symbol, ex_date, action_type)
+            )
+        ''')
+        conn.commit()
+        db_connections[db_name] = conn
+    return db_connections[db_name]
 
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS ohlcv (
-            symbol TEXT,
-            date TEXT,
-            open REAL,
-            high REAL,
-            low REAL,
-            close REAL,
-            volume INTEGER,
-            is_index INTEGER DEFAULT 0,
-            PRIMARY KEY (symbol, date)
-        )
-    ''')
 
-    cursor.execute("PRAGMA table_info(ohlcv)")
-    columns = [row[1] for row in cursor.fetchall()]
-    if 'is_index' not in columns:
-        cursor.execute("ALTER TABLE ohlcv ADD COLUMN is_index INTEGER DEFAULT 0")
-
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS corporate_actions (
-            symbol TEXT,
-            ex_date TEXT,
-            purpose TEXT,
-            ratio REAL,
-            action_type TEXT,
-            PRIMARY KEY (symbol, ex_date, action_type)
-        )
-    ''')
-
-    conn.commit()
-
-
-def get_end_date():
-    """Determines target end date based on environment variable or current date."""
-    if END_DATE_ENV and len(END_DATE_ENV) == 10:
+def close_all_databases():
+    """Flushes and closes all open database connections."""
+    for name, conn in db_connections.items():
         try:
-            return datetime.strptime(END_DATE_ENV, "%Y-%m-%d")
-        except ValueError:
+            conn.execute("PRAGMA wal_checkpoint(FULL);")
+            conn.close()
+        except Exception:
             pass
-    return datetime.now()
+    db_connections.clear()
 
 
 def generate_date_range(start_date_str):
@@ -85,35 +82,43 @@ def generate_date_range(start_date_str):
     except ValueError:
         start = datetime.strptime("2023-12-01", "%Y-%m-%d")
 
-    target_end = get_end_date()
-    date_list = []
+    target_end = datetime.now()
+    if END_DATE_ENV and len(END_DATE_ENV) == 10:
+        try:
+            target_end = datetime.strptime(END_DATE_ENV, "%Y-%m-%d")
+        except ValueError:
+            pass
 
+    date_list = []
     current = start
     while current <= target_end:
-        if current.weekday() < 5:  # Monday through Friday
+        if current.weekday() < 5:
             date_list.append(current.strftime("%Y-%m-%d"))
         current += timedelta(days=1)
 
     return date_list
 
 
-def fetch_nse_bhavcopy_range(conn, start_date=START_DATE):
-    """Downloads daily Bhavcopies directly from NSE for missing dates."""
+def fetch_nse_bhavcopy_range(start_date=START_DATE):
+    """Downloads daily Bhavcopies and saves them into respective yearly database files."""
     session = requests.Session()
     session.headers.update(HEADERS)
 
     try:
         session.get("https://www.nseindia.com", timeout=10)
     except Exception as e:
-        print(f"[WARNING] Session connection warning: {e}")
+        print(f"[WARNING] Session setup issue: {e}")
 
     date_list = generate_date_range(start_date)
-    cursor = conn.cursor()
     total_added = 0
 
-    print(f"[START] Fetching Bhavcopies from {start_date} to present ({len(date_list)} weekdays)...")
+    print(f"[START] Fetching Bhavcopies from {start_date} to present across yearly databases...")
 
     for date_str in date_list:
+        year_str = date_str[:4]
+        conn = get_db_connection(year_str)
+        cursor = conn.cursor()
+
         cursor.execute("SELECT COUNT(*) FROM ohlcv WHERE date = ?", (date_str,))
         if cursor.fetchone()[0] > 0:
             continue
@@ -129,7 +134,6 @@ def fetch_nse_bhavcopy_range(conn, start_date=START_DATE):
             f"https://archives.nseindia.com/content/historical/EQUITIES/{year}/{month}/cm{day_str}{month}{year}bhav.csv.zip"
         ]
 
-        downloaded = False
         for url in urls:
             try:
                 res = session.get(url, timeout=10)
@@ -168,80 +172,124 @@ def fetch_nse_bhavcopy_range(conn, start_date=START_DATE):
 
                     conn.commit()
                     total_added += len(records)
-                    print(f"[SUCCESS] Downloaded Bhavcopy for {date_str}: {len(records)} records.")
-                    downloaded = True
+                    print(f"[SUCCESS] Downloaded Bhavcopy for {date_str} -> nse_{year_str}.db ({len(records)} records)")
                     break
             except Exception:
                 continue
 
-    print(f"[COMPLETE] Daily EOD fetch finished. Total new records added: {total_added}")
+    print(f"[COMPLETE] EOD fetch finished. Total new records added: {total_added}")
 
 
-def parse_purpose_multipliers(purpose_str, row_data):
-    """Specific parser matching NSE split.csv, demerger.csv, bonus.csv, and rights.csv."""
-    factors = []
-    p_lower = str(purpose_str).lower()
+def parse_split_ratio(purpose_str, row_tuple):
+    """Deep inspection parser for stock splits in NSE exports."""
+    p_lower = str(purpose_str).lower().strip()
 
-    # --- 1. STOCK SPLITS ---
-    # Parse text pattern: "Fv Split Rs.10/- To Re.1/" or "Fv Split Rs.5/- To Re.1/-"
-    split_match = re.search(r"(?:fv\s*)?split\s*(?:rs|re)?\.?\s*(\d+(?:\.\d+)?)\s*(?:/-)?\s*to\s*(?:rs|re)?\.?\s*(\d+(?:\.\d+)?)", p_lower)
-    if split_match:
+    # Pattern 1: "Face Value Split From Rs 10/- To Rs 2/-" or "Fv Split Rs 10 To Re 1"
+    m1 = re.search(r"(?:from|rs|re|\.|\s)*(\d+(?:\.\d+)?)\s*(?:/-)?\s*to\s*(?:rs|re|\.|\s)*(\d+(?:\.\d+)?)", p_lower)
+    if m1:
         try:
-            old_fv = float(split_match.group(1))
-            new_fv = float(split_match.group(2))
-            if old_fv > new_fv > 0:
-                factors.append(("SPLIT", new_fv / old_fv))
+            v1 = float(m1.group(1))
+            v2 = float(m1.group(2))
+            if v1 > v2 > 0:
+                return v2 / v1
         except ValueError:
             pass
 
-    # Fallback to FACE VALUE column vs New Value column in split.csv
-    if not factors and "split" in p_lower:
+    # Pattern 2: Extract all numeric components in text (e.g., "Split 10 to 2" or "Split 10 2")
+    numbers = re.findall(r"\b\d+(?:\.\d+)?\b", p_lower)
+    if len(numbers) >= 2:
         try:
-            old_fv = float(row_data.get('FACE_VALUE', 0))
-            # Search dictionary for any numeric key/value or value after FACE_VALUE
-            for key, val in row_data.items():
-                if key not in ['SYMBOL', 'COMPANY_NAME', 'SERIES', 'PURPOSE', 'FACE_VALUE', 'EX_DATE', 'EX-DATE', 'RECORD_DATE']:
-                    try:
-                        possible_new_fv = float(val)
-                        if 0 < possible_new_fv < old_fv:
-                            factors.append(("SPLIT", possible_new_fv / old_fv))
-                            break
-                    except (ValueError, TypeError):
-                        continue
-        except (ValueError, TypeError):
+            nums = [float(n) for n in numbers]
+            if nums[0] > nums[1] > 0:
+                return nums[1] / nums[0]
+        except ValueError:
             pass
 
-    # --- 2. DEMERGERS ---
+    # Pattern 3: Scan raw row values for numbers if purpose text didn't match
+    row_nums = []
+    for val in row_tuple:
+        try:
+            v = float(str(val).strip())
+            if 0.1 <= v <= 1000:
+                row_nums.append(v)
+        except ValueError:
+            continue
+
+    if len(row_nums) >= 2:
+        old_v, new_v = row_nums[0], row_nums[1]
+        if old_v > new_v > 0:
+            return new_v / old_v
+
+    return None
+
+
+def parse_purpose_multipliers(purpose_str, row_tuple):
+    """Parses splits, demergers, bonuses, and rights."""
+    factors = []
+    p_lower = str(purpose_str).lower()
+
+    # 1. SPLIT
+    if "split" in p_lower or "sub-division" in p_lower or "sub division" in p_lower or "subdivision" in p_lower:
+        factor = parse_split_ratio(purpose_str, row_tuple)
+        if factor and 0.0 < factor < 1.0:
+            factors.append(("SPLIT", factor))
+
+    # 2. DEMERGER
     if "demerger" in p_lower or "de-merger" in p_lower or "demerg" in p_lower:
-        # Check percentage in text (e.g., "Demerger 15%")
         pct_match = re.search(r"(\d+(?:\.\d+)?)\s*%", p_lower)
         if pct_match:
             pct = float(pct_match.group(1))
             if 0 < pct < 100:
                 factors.append(("DEMERGER", (100.0 - pct) / 100.0))
 
-    # --- 3. BONUSES ---
+    # 3. BONUS
     bonus_match = re.search(r"bonus\s*(?:-\s*)?\b(\d+)\s*:\s*(\d+)", p_lower)
     if bonus_match:
-        bonus_shares = float(bonus_match.group(1))
-        held_shares = float(bonus_match.group(2))
-        if bonus_shares + held_shares > 0:
-            factors.append(("BONUS", held_shares / (bonus_shares + held_shares)))
+        b_shares = float(bonus_match.group(1))
+        h_shares = float(bonus_match.group(2))
+        if b_shares + h_shares > 0:
+            factors.append(("BONUS", h_shares / (b_shares + h_shares)))
 
-    # --- 4. RIGHTS ISSUES ---
+    # 4. RIGHTS
     rights_match = re.search(r"rights\s*(?:-\s*)?\b(\d+)\s*:\s*(\d+)", p_lower)
     if rights_match:
-        rights_shares = float(rights_match.group(1))
-        held_shares = float(rights_match.group(2))
-        if rights_shares + held_shares > 0:
-            factors.append(("RIGHTS", held_shares / (rights_shares + held_shares)))
+        r_shares = float(rights_match.group(1))
+        h_shares = float(rights_match.group(2))
+        if r_shares + h_shares > 0:
+            factors.append(("RIGHTS", h_shares / (r_shares + h_shares)))
 
     return factors
 
 
-def process_all_corporate_actions(conn):
-    """Processes all corporate action CSV files."""
-    cursor = conn.cursor()
+def apply_factor_across_all_dbs(symbol, ex_date, factor, purpose, action_type):
+    """Applies a split/adjustment multiplier to ALL yearly databases for dates < ex_date."""
+    # Find all year databases present in working dir
+    db_files = [f for f in os.listdir(".") if f.startswith("nse_") and f.endswith(".db")]
+    
+    for db_file in db_files:
+        year_str = db_file.replace("nse_", "").replace(".db", "")
+        conn = get_db_connection(year_str)
+        cursor = conn.cursor()
+
+        cursor.execute('''
+            INSERT OR IGNORE INTO corporate_actions (symbol, ex_date, purpose, ratio, action_type)
+            VALUES (?, ?, ?, ?, ?)
+        ''', (symbol, ex_date, purpose, factor, action_type))
+
+        cursor.execute('''
+            UPDATE ohlcv 
+            SET open = ROUND(open * ?, 2),
+                high = ROUND(high * ?, 2),
+                low = ROUND(low * ?, 2),
+                close = ROUND(close * ?, 2)
+            WHERE symbol = ? AND date < ? AND is_index = 0
+        ''', (factor, factor, factor, factor, symbol, ex_date))
+
+        conn.commit()
+
+
+def process_all_corporate_actions():
+    """Processes corporate action CSV files."""
     applied_count = 0
 
     for file_path in CA_FILES:
@@ -250,8 +298,9 @@ def process_all_corporate_actions(conn):
 
         print(f"[PROCESSING] Reading '{file_path}'...")
         try:
-            df = pd.read_csv(file_path)
-            df.columns = [c.strip().upper().replace(" ", "_") for c in df.columns]
+            # Load CSV without strict headers to catch all column formats
+            df = pd.read_csv(file_path, skipinitialspace=True)
+            df.columns = [str(c).strip().upper().replace(" ", "_") for c in df.columns]
 
             for _, row in df.iterrows():
                 symbol = str(row.get("SYMBOL", "")).strip()
@@ -266,39 +315,23 @@ def process_all_corporate_actions(conn):
                 except Exception:
                     continue
 
-                row_dict = row.to_dict()
-                events = parse_purpose_multipliers(purpose, row_dict)
+                row_tuple = tuple(row.values)
+                events = parse_purpose_multipliers(purpose, row_tuple)
 
                 for action_type, factor in events:
                     if 0.0 < factor < 1.0:
-                        cursor.execute('''
-                            INSERT OR IGNORE INTO corporate_actions (symbol, ex_date, purpose, ratio, action_type)
-                            VALUES (?, ?, ?, ?, ?)
-                        ''', (symbol, ex_date, purpose, factor, action_type))
-
-                        if cursor.rowcount > 0:
-                            cursor.execute('''
-                                UPDATE ohlcv 
-                                SET open = ROUND(open * ?, 2),
-                                    high = ROUND(high * ?, 2),
-                                    low = ROUND(low * ?, 2),
-                                    close = ROUND(close * ?, 2)
-                                WHERE symbol = ? AND date < ? AND is_index = 0
-                            ''', (factor, factor, factor, factor, symbol, ex_date))
-
-                            if cursor.rowcount > 0:
-                                applied_count += 1
-                                print(f"[{action_type}] Adjusted {symbol} prior to {ex_date} with factor {factor:.4f} ({purpose})")
+                        apply_factor_across_all_dbs(symbol, ex_date, factor, purpose, action_type)
+                        applied_count += 1
+                        print(f"[{action_type}] Adjusted {symbol} prior to {ex_date} with factor {factor:.4f} ({purpose})")
 
         except Exception as e:
             print(f"[ERROR] Failed to process {file_path}: {e}")
 
-    conn.commit()
     print(f"[SUCCESS] Corporate action CSV batch processing complete ({applied_count} actions applied).")
 
 
-def apply_manual_overrides(conn):
-    """Applies custom adjustments from manual_adjustments.json."""
+def apply_manual_overrides():
+    """Applies custom adjustments from manual_adjustments.json across databases."""
     if not os.path.exists(OVERRIDE_FILE):
         return
 
@@ -306,9 +339,7 @@ def apply_manual_overrides(conn):
         with open(OVERRIDE_FILE, 'r') as f:
             overrides = json.load(f)
 
-        cursor = conn.cursor()
         applied_count = 0
-
         for symbol, events in overrides.items():
             for event in events:
                 ex_date = event.get('ex_date')
@@ -316,42 +347,19 @@ def apply_manual_overrides(conn):
                 purpose = event.get('description', 'Manual Adjustment')
 
                 if factor < 1.0 and ex_date:
-                    cursor.execute('''
-                        INSERT OR IGNORE INTO corporate_actions (symbol, ex_date, purpose, ratio, action_type)
-                        VALUES (?, ?, ?, ?, 'MANUAL_OVERRIDE')
-                    ''', (symbol, ex_date, purpose, factor))
+                    apply_factor_across_all_dbs(symbol, ex_date, factor, purpose, "MANUAL_OVERRIDE")
+                    applied_count += 1
 
-                    if cursor.rowcount > 0:
-                        cursor.execute('''
-                            UPDATE ohlcv 
-                            SET open = ROUND(open * ?, 2),
-                                high = ROUND(high * ?, 2),
-                                low = ROUND(low * ?, 2),
-                                close = ROUND(close * ?, 2)
-                            WHERE symbol = ? AND date < ? AND is_index = 0
-                        ''', (factor, factor, factor, factor, symbol, ex_date))
-
-                        if cursor.rowcount > 0:
-                            applied_count += 1
-
-        conn.commit()
         print(f"[SUCCESS] Manual overrides applied ({applied_count} events).")
     except Exception as e:
-        print(f"[ERROR] Applying manual corporate action overrides failed: {e}")
+        print(f"[ERROR] Applying manual overrides failed: {e}")
 
 
 def main():
-    """Main execution pipeline."""
-    conn = sqlite3.connect(DB_NAME)
-
-    init_db(conn)
-    fetch_nse_bhavcopy_range(conn, start_date=START_DATE)
-    process_all_corporate_actions(conn)
-    apply_manual_overrides(conn)
-
-    # Force checkpointing and close before git operations
-    conn.execute("PRAGMA wal_checkpoint(FULL);")
-    conn.close()
+    fetch_nse_bhavcopy_range(start_date=START_DATE)
+    process_all_corporate_actions()
+    apply_manual_overrides()
+    close_all_databases()
 
 
 if __name__ == "__main__":
