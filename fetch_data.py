@@ -178,14 +178,13 @@ def fetch_nse_bhavcopy_range(conn, start_date=START_DATE):
 
 
 def parse_purpose_multipliers(purpose_str, row_data):
-    """Targeted parser for NSE split.csv, demerger.csv, bonus.csv, and rights.csv."""
+    """Specific parser matching NSE split.csv, demerger.csv, bonus.csv, and rights.csv."""
     factors = []
     p_lower = str(purpose_str).lower()
 
     # --- 1. STOCK SPLITS ---
-    # Example Purpose strings from split.csv:
-    # "Fv Split Rs.10/- To Re.1/" or "Fv Split Rs.5/- To Re.1/-"
-    split_match = re.search(r"(?:fv\s*split|split)?\s*(?:rs|re)\.?\s*(\d+(?:\.\d+)?)\s*(?:/-)?\s*to\s*(?:rs|re)\.?\s*(\d+(?:\.\d+)?)", p_lower)
+    # Parse text pattern: "Fv Split Rs.10/- To Re.1/" or "Fv Split Rs.5/- To Re.1/-"
+    split_match = re.search(r"(?:fv\s*)?split\s*(?:rs|re)?\.?\s*(\d+(?:\.\d+)?)\s*(?:/-)?\s*to\s*(?:rs|re)?\.?\s*(\d+(?:\.\d+)?)", p_lower)
     if split_match:
         try:
             old_fv = float(split_match.group(1))
@@ -195,37 +194,31 @@ def parse_purpose_multipliers(purpose_str, row_data):
         except ValueError:
             pass
 
-    # Fallback for split.csv using FACE_VALUE column vs NEW_FV column/unnamed column
+    # Fallback to FACE VALUE column vs New Value column in split.csv
     if not factors and "split" in p_lower:
         try:
             old_fv = float(row_data.get('FACE_VALUE', 0))
-            # In NSE split.csv, the column immediately following PURPOSE is often the new face value
-            new_fv = float(row_data.get('NEW_FV', row_data.get('NEW_FACE_VALUE', 0)))
-            if old_fv > new_fv > 0:
-                factors.append(("SPLIT", new_fv / old_fv))
+            # Search dictionary for any numeric key/value or value after FACE_VALUE
+            for key, val in row_data.items():
+                if key not in ['SYMBOL', 'COMPANY_NAME', 'SERIES', 'PURPOSE', 'FACE_VALUE', 'EX_DATE', 'EX-DATE', 'RECORD_DATE']:
+                    try:
+                        possible_new_fv = float(val)
+                        if 0 < possible_new_fv < old_fv:
+                            factors.append(("SPLIT", possible_new_fv / old_fv))
+                            break
+                    except (ValueError, TypeError):
+                        continue
         except (ValueError, TypeError):
             pass
 
     # --- 2. DEMERGERS ---
     if "demerger" in p_lower or "de-merger" in p_lower or "demerg" in p_lower:
-        # Check if percentage is mentioned in text (e.g., "Demerger - 10%")
+        # Check percentage in text (e.g., "Demerger 15%")
         pct_match = re.search(r"(\d+(?:\.\d+)?)\s*%", p_lower)
         if pct_match:
             pct = float(pct_match.group(1))
             if 0 < pct < 100:
                 factors.append(("DEMERGER", (100.0 - pct) / 100.0))
-        
-        # Check explicit factor or ratio columns if present
-        if not factors:
-            for col in ["FACTOR", "RATIO", "DEMERGER_RATIO"]:
-                if col in row_data:
-                    try:
-                        val = float(row_data[col])
-                        if 0.0 < val < 1.0:
-                            factors.append(("DEMERGER", val))
-                            break
-                    except (ValueError, TypeError):
-                        pass
 
     # --- 3. BONUSES ---
     bonus_match = re.search(r"bonus\s*(?:-\s*)?\b(\d+)\s*:\s*(\d+)", p_lower)
@@ -356,7 +349,7 @@ def main():
     process_all_corporate_actions(conn)
     apply_manual_overrides(conn)
 
-    # Ensure WAL checkpoint and clean connection closure before Git commit step
+    # Force checkpointing and close before git operations
     conn.execute("PRAGMA wal_checkpoint(FULL);")
     conn.close()
 
