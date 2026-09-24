@@ -12,10 +12,11 @@ from datetime import datetime, timedelta
 DB_NAME = "nse_eod_data.db"
 OVERRIDE_FILE = "manual_adjustments.json"
 
-# Start Date for backfill
-START_DATE = "2024-01-01"
+# Dynamic Environment Variables passed from daily_cron.yml
+START_DATE = os.getenv("START_DATE", "2023-12-01")
+END_DATE_ENV = os.getenv("END_DATE", "")
 
-# Headers for NSE Requests
+# Standard Browser Headers to bypass NSE anti-scraping
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
@@ -25,7 +26,7 @@ HEADERS = {
 
 
 def init_db(conn):
-    """Initializes schema and tables."""
+    """Initializes schema and creates required SQLite tables."""
     cursor = conn.cursor()
 
     cursor.execute('''
@@ -61,15 +62,22 @@ def init_db(conn):
     conn.commit()
 
 
+def get_end_date():
+    """Determines the target end date based on environment variable or current date."""
+    if END_DATE_ENV and len(END_DATE_ENV.strip()) == 10:
+        return datetime.strptime(END_DATE_ENV.strip(), "%Y-%m-%d")
+    return datetime.now()
+
+
 def generate_date_range(start_date_str):
-    """Generates weekday date strings."""
+    """Generates weekday date strings from start_date_str to target end date."""
     start = datetime.strptime(start_date_str, "%Y-%m-%d")
-    today = datetime.now()
+    target_end = get_end_date()
     date_list = []
 
     current = start
-    while current <= today:
-        if current.weekday() < 5:
+    while current <= target_end:
+        if current.weekday() < 5:  # Monday to Friday
             date_list.append(current.strftime("%Y-%m-%d"))
         current += timedelta(days=1)
 
@@ -77,7 +85,7 @@ def generate_date_range(start_date_str):
 
 
 def fetch_nse_bhavcopy_range(conn, start_date=START_DATE):
-    """Downloads daily Bhavcopies directly from NSE."""
+    """Downloads daily Bhavcopies directly from NSE for missing dates."""
     session = requests.Session()
     session.headers.update(HEADERS)
 
@@ -90,9 +98,10 @@ def fetch_nse_bhavcopy_range(conn, start_date=START_DATE):
     cursor = conn.cursor()
     total_added = 0
 
-    print(f"[START] Fetching Bhavcopies from {start_date} to present...")
+    print(f"[START] Fetching Bhavcopies from {start_date} to present ({len(date_list)} weekdays)...")
 
     for date_str in date_list:
+        # Fast skipping: Check if daily data already exists in database
         cursor.execute("SELECT COUNT(*) FROM ohlcv WHERE date = ?", (date_str,))
         if cursor.fetchone()[0] > 0:
             continue
@@ -153,21 +162,28 @@ def fetch_nse_bhavcopy_range(conn, start_date=START_DATE):
             except Exception:
                 continue
 
-    print(f"[COMPLETE] Daily EOD fetch finished. Added {total_added} records.")
+    print(f"[COMPLETE] Daily EOD fetch finished. Total new records added: {total_added}")
 
 
-def auto_adjust_splits_and_bonuses(conn):
-    """Fetches NSE corporate actions API and automatically applies split and bonus multipliers."""
-    print("[CORPORATE ACTIONS] Checking NSE API for automated splits and bonuses...")
+def auto_adjust_splits_and_bonuses(conn, start_date=START_DATE):
+    """Fetches full historical corporate action data from START_DATE to today and applies split/bonus multipliers."""
+    dt_start = datetime.strptime(start_date, "%Y-%m-%d")
+    from_date_str = dt_start.strftime("%d-%m-%Y")
+    to_date_str = get_end_date().strftime("%d-%m-%Y")
+
+    print(f"[CORPORATE ACTIONS] Fetching historical Splits & Bonuses from {from_date_str} to {to_date_str}...")
+
     session = requests.Session()
     session.headers.update(HEADERS)
 
+    url = f"https://www.nseindia.com/api/corporate-actions?index=equities&from_date={from_date_str}&to_date={to_date_str}"
+
     try:
         session.get("https://www.nseindia.com", timeout=10)
-        url = "https://www.nseindia.com/api/corporates-corporateActions?index=equities"
-        res = session.get(url, timeout=12)
+        res = session.get(url, timeout=15)
+
         if res.status_code != 200:
-            print("[WARNING] Could not fetch corporate actions from NSE API.")
+            print(f"[WARNING] Could not fetch corporate actions endpoint (Status: {res.status_code}).")
             return
 
         actions = res.json()
@@ -175,46 +191,51 @@ def auto_adjust_splits_and_bonuses(conn):
         applied_count = 0
 
         for item in actions:
-            symbol = item.get("symbol")
-            purpose = item.get("subject", "")
-            ex_date_str = item.get("exDate")
+            symbol = item.get("symbol") or item.get("SYMBOL")
+            purpose = item.get("subject") or item.get("PURPOSE") or ""
+            ex_date_str = item.get("exDate") or item.get("EX_DATE")
 
-            if not symbol or not ex_date_str or ex_date_str == "-":
+            if not symbol or not ex_date_str or ex_date_str in ["-", ""]:
                 continue
 
             try:
-                ex_date = datetime.strptime(ex_date_str, "%d-%b-%Y").strftime("%Y-%m-%d")
+                ex_date = pd.to_datetime(ex_date_str).strftime("%Y-%m-%d")
             except Exception:
                 continue
 
             factor = None
             action_type = None
+            purpose_lower = purpose.lower()
 
-            # 1. Parse Splits (e.g., "Face Value Split From Rs 10 To Rs 2" or "Sub-Division... 10 to 1")
-            split_match = re.search(r"rs\.?\s*(\d+)\s*to\s*rs\.?\s*(\d+)", purpose, re.IGNORECASE)
-            if split_match and "split" in purpose.lower() or "sub-division" in purpose.lower():
-                old_fv = float(split_match.group(1))
-                new_fv = float(split_match.group(2))
-                if old_fv > 0 and new_fv > 0:
-                    factor = new_fv / old_fv
-                    action_type = "AUTO_SPLIT"
+            # 1. Parse Splits (e.g., "From Rs 2/- Per Share To Re 1/-", "From Rs 10 To Rs 2")
+            if "split" in purpose_lower or "sub-division" in purpose_lower:
+                split_match = re.search(r"(\d+)\s*/?-\s*to\s*(?:re\.?|rs\.?)?\s*(\d+)", purpose_lower)
+                if not split_match:
+                    split_match = re.search(r"rs\.?\s*(\d+)\s*to\s*rs\.?\s*(\d+)", purpose_lower)
 
-            # 2. Parse Bonuses (e.g., "Bonus 1:1" or "Bonus Ratio 2:1")
-            bonus_match = re.search(r"bonus.*?\b(\d+)\s*:\s*(\d+)", purpose, re.IGNORECASE)
-            if bonus_match:
-                bonus_shares = float(bonus_match.group(1))
-                held_shares = float(bonus_match.group(2))
-                factor = held_shares / (bonus_shares + held_shares)
-                action_type = "AUTO_BONUS"
+                if split_match:
+                    old_fv = float(split_match.group(1))
+                    new_fv = float(split_match.group(2))
+                    if old_fv > 0 and new_fv > 0 and new_fv < old_fv:
+                        factor = new_fv / old_fv
+                        action_type = "AUTO_SPLIT"
+
+            # 2. Parse Bonuses (e.g., "Bonus 1:1", "Bonus 1:2")
+            if "bonus" in purpose_lower:
+                bonus_match = re.search(r"bonus.*?\b(\d+)\s*:\s*(\d+)", purpose_lower)
+                if bonus_match:
+                    bonus_shares = float(bonus_match.group(1))
+                    held_shares = float(bonus_match.group(2))
+                    if held_shares + bonus_shares > 0:
+                        factor = held_shares / (bonus_shares + held_shares)
+                        action_type = "AUTO_BONUS"
 
             if factor and factor < 1.0:
-                # Store corporate action record
                 cursor.execute('''
                     INSERT OR IGNORE INTO corporate_actions (symbol, ex_date, purpose, ratio, action_type)
                     VALUES (?, ?, ?, ?, ?)
                 ''', (symbol, ex_date, purpose, factor, action_type))
 
-                # Check if action was already applied to OHLCV
                 if cursor.rowcount > 0:
                     cursor.execute('''
                         UPDATE ohlcv 
@@ -224,8 +245,10 @@ def auto_adjust_splits_and_bonuses(conn):
                             close = ROUND(close * ?, 2)
                         WHERE symbol = ? AND date < ? AND is_index = 0
                     ''', (factor, factor, factor, factor, symbol, ex_date))
-                    applied_count += 1
-                    print(f"[{action_type}] Adjusted {symbol} prior to {ex_date} with factor {factor:.4f}")
+
+                    if cursor.rowcount > 0:
+                        applied_count += 1
+                        print(f"[{action_type}] Adjusted {symbol} prior to {ex_date} with factor {factor:.4f}")
 
         conn.commit()
         print(f"[SUCCESS] Auto-adjusted {applied_count} split/bonus events.")
@@ -235,7 +258,7 @@ def auto_adjust_splits_and_bonuses(conn):
 
 
 def apply_manual_overrides(conn):
-    """Applies manual adjustments (Demergers, Rights Issues, etc.)."""
+    """Applies manual adjustments from manual_adjustments.json."""
     if not os.path.exists(OVERRIDE_FILE):
         return
 
@@ -279,8 +302,8 @@ def main():
     conn = sqlite3.connect(DB_NAME)
 
     init_db(conn)
-    fetch_nse_bhavcopy_range(conn)
-    auto_adjust_splits_and_bonuses(conn)
+    fetch_nse_bhavcopy_range(conn, start_date=START_DATE)
+    auto_adjust_splits_and_bonuses(conn, start_date=START_DATE)
     apply_manual_overrides(conn)
 
     conn.close()
