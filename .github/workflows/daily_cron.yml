@@ -35,8 +35,8 @@ jobs:
     - name: Run Fetcher Script
       run: python fetch_data.py
       env:
-        START_DATE: ${{ inputs.start_date || '2000-01-01' }}
-        END_DATE: ${{ inputs.end_date || '' }}
+        START_DATE: ${{ github.event.inputs.start_date || '2000-01-01' }}
+        END_DATE: ${{ github.event.inputs.end_date || '' }}
 
     - name: Commit and Push Updated Databases
       run: |
