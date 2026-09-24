@@ -29,9 +29,20 @@ HEADERS = {
 db_connections = {}
 
 def get_db_connection(year_str):
-    """Returns or creates a connection for a specific yearly SQLite database file."""
+    """Returns or creates a connection for a specific yearly SQLite database file safely."""
     db_name = f"nse_{year_str}.db"
+    
     if db_name not in db_connections:
+        # Check if existing file is corrupted
+        if os.path.exists(db_name):
+            try:
+                test_conn = sqlite3.connect(db_name)
+                test_conn.execute("PRAGMA quick_check;")
+                test_conn.close()
+            except sqlite3.DatabaseError:
+                print(f"[WARNING] Removing corrupted database file: {db_name}")
+                os.remove(db_name)
+
         conn = sqlite3.connect(db_name)
         cursor = conn.cursor()
         
