@@ -9,7 +9,7 @@ on:
       start_date:
         description: 'Start Date (YYYY-MM-DD)'
         required: false
-        default: '2026-01-01'
+        default: '2026-09-01'
       end_date:
         description: 'End Date (YYYY-MM-DD)'
         required: false
@@ -18,6 +18,10 @@ on:
 jobs:
   build:
     runs-on: ubuntu-latest
+    
+    # GRANT WRITE PERMISSIONS TO GITHUB ACTIONS BOT
+    permissions:
+      contents: write
 
     steps:
     - name: Checkout Repository
