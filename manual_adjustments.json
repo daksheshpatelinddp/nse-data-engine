@@ -1,0 +1,18 @@
+{
+  "RELIANCE": [
+    {
+      "ex_date": "2023-07-20",
+      "event_type": "DEMERGER",
+      "description": "Jio Financial Services Demerger",
+      "factor": 0.9082
+    }
+  ],
+  "ITC": [
+    {
+      "ex_date": "2024-01-01",
+      "event_type": "SPINOFF",
+      "description": "ITC Hotels Spinoff",
+      "factor": 0.9250
+    }
+  ]
+}
