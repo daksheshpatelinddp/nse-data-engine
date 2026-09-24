@@ -178,67 +178,54 @@ def fetch_nse_bhavcopy_range(conn, start_date=START_DATE):
 
 
 def parse_purpose_multipliers(purpose_str, row_data):
-    """Robust parser for splits, demergers, bonuses, and rights across standard NSE formats."""
+    """Targeted parser for NSE split.csv, demerger.csv, bonus.csv, and rights.csv."""
     factors = []
     p_lower = str(purpose_str).lower()
 
-    # --- 1. STOCK SPLITS & SUB-DIVISIONS ---
-    # Case A: Check direct columns if present in split.csv (e.g. OLD_FV and NEW_FV)
-    old_fv = row_data.get('OLD_FV', row_data.get('FACE_VALUE', None))
-    new_fv = row_data.get('NEW_FV', row_data.get('NEW_FACE_VALUE', None))
-    
-    try:
-        if old_fv and new_fv and float(old_fv) > float(new_fv) > 0:
-            factors.append(("SPLIT", float(new_fv) / float(old_fv)))
-    except (ValueError, TypeError):
-        pass
+    # --- 1. STOCK SPLITS ---
+    # Example Purpose strings from split.csv:
+    # "Fv Split Rs.10/- To Re.1/" or "Fv Split Rs.5/- To Re.1/-"
+    split_match = re.search(r"(?:fv\s*split|split)?\s*(?:rs|re)\.?\s*(\d+(?:\.\d+)?)\s*(?:/-)?\s*to\s*(?:rs|re)\.?\s*(\d+(?:\.\d+)?)", p_lower)
+    if split_match:
+        try:
+            old_fv = float(split_match.group(1))
+            new_fv = float(split_match.group(2))
+            if old_fv > new_fv > 0:
+                factors.append(("SPLIT", new_fv / old_fv))
+        except ValueError:
+            pass
 
-    if not factors:
-        # Case B: Regex for "Rs 10/- To Rs 2/-" or "From Rs 10 To Re 1" or "10 To 5"
-        split_match = re.search(r"(?:from\s*)?(?:re\.?|rs\.?)?\s*(\d+(?:\.\d+)?)\s*(?:/-)?\s*to\s*(?:re\.?|rs\.?)?\s*(\d+(?:\.\d+)?)", p_lower)
-        if split_match:
-            try:
-                v1 = float(split_match.group(1))
-                v2 = float(split_match.group(2))
-                if v1 > v2 > 0:
-                    factors.append(("SPLIT", v2 / v1))
-            except ValueError:
-                pass
+    # Fallback for split.csv using FACE_VALUE column vs NEW_FV column/unnamed column
+    if not factors and "split" in p_lower:
+        try:
+            old_fv = float(row_data.get('FACE_VALUE', 0))
+            # In NSE split.csv, the column immediately following PURPOSE is often the new face value
+            new_fv = float(row_data.get('NEW_FV', row_data.get('NEW_FACE_VALUE', 0)))
+            if old_fv > new_fv > 0:
+                factors.append(("SPLIT", new_fv / old_fv))
+        except (ValueError, TypeError):
+            pass
 
-    if not factors and ("split" in p_lower or "sub-division" in p_lower or "sub division" in p_lower):
-        # Case C: Generic split numbers like "1:5" or "10:1"
-        gen_match = re.search(r"(\d+)\s*:\s*(\d+)", p_lower)
-        if gen_match:
-            try:
-                n1 = float(gen_match.group(1))
-                n2 = float(gen_match.group(2))
-                if n1 < n2 and n2 > 0:
-                    factors.append(("SPLIT", n1 / n2))
-                elif n1 > n2 and n1 > 0:
-                    factors.append(("SPLIT", n2 / n1))
-            except ValueError:
-                pass
-
-    # --- 2. DEMERGERS & SPINFOFFS ---
-    if "demerger" in p_lower or "spin" in p_lower or "demerg" in p_lower:
-        # Check direct ratio/factor column
-        for col_name in ["FACTOR", "RATIO", "DEMERGER_RATIO"]:
-            if col_name in row_data:
-                try:
-                    f_val = float(row_data[col_name])
-                    if 0.0 < f_val < 1.0:
-                        factors.append(("DEMERGER", f_val))
-                        break
-                except (ValueError, TypeError):
-                    pass
+    # --- 2. DEMERGERS ---
+    if "demerger" in p_lower or "de-merger" in p_lower or "demerg" in p_lower:
+        # Check if percentage is mentioned in text (e.g., "Demerger - 10%")
+        pct_match = re.search(r"(\d+(?:\.\d+)?)\s*%", p_lower)
+        if pct_match:
+            pct = float(pct_match.group(1))
+            if 0 < pct < 100:
+                factors.append(("DEMERGER", (100.0 - pct) / 100.0))
         
-        # Check percentage inside purpose (e.g., "Demerger - 15%" -> factor is 0.85)
-        if not any(f[0] == "DEMERGER" for f in factors):
-            pct_match = re.search(r"(\d+(?:\.\d+)?)\s*%", p_lower)
-            if pct_match:
-                pct = float(pct_match.group(1))
-                if 0 < pct < 100:
-                    factors.append(("DEMERGER", (100.0 - pct) / 100.0))
+        # Check explicit factor or ratio columns if present
+        if not factors:
+            for col in ["FACTOR", "RATIO", "DEMERGER_RATIO"]:
+                if col in row_data:
+                    try:
+                        val = float(row_data[col])
+                        if 0.0 < val < 1.0:
+                            factors.append(("DEMERGER", val))
+                            break
+                    except (ValueError, TypeError):
+                        pass
 
     # --- 3. BONUSES ---
     bonus_match = re.search(r"bonus\s*(?:-\s*)?\b(\d+)\s*:\s*(\d+)", p_lower)
@@ -260,7 +247,7 @@ def parse_purpose_multipliers(purpose_str, row_data):
 
 
 def process_all_corporate_actions(conn):
-    """Processes all uploaded corporate action CSV files cleanly with flexible date parsing."""
+    """Processes all corporate action CSV files."""
     cursor = conn.cursor()
     applied_count = 0
 
@@ -275,7 +262,7 @@ def process_all_corporate_actions(conn):
 
             for _, row in df.iterrows():
                 symbol = str(row.get("SYMBOL", "")).strip()
-                ex_date_raw = str(row.get("EX_DATE", row.get("EXDATE", row.get("EX-DATE", "")))).strip()
+                ex_date_raw = str(row.get("EX-DATE", row.get("EX_DATE", row.get("EXDATE", "")))).strip()
                 purpose = str(row.get("PURPOSE", "")).strip()
 
                 if not symbol or symbol in ["nan", ""] or not ex_date_raw or ex_date_raw in ["-", "nan", ""]:
@@ -369,6 +356,8 @@ def main():
     process_all_corporate_actions(conn)
     apply_manual_overrides(conn)
 
+    # Ensure WAL checkpoint and clean connection closure before Git commit step
+    conn.execute("PRAGMA wal_checkpoint(FULL);")
     conn.close()
 
 
