@@ -180,7 +180,7 @@ def fetch_nse_bhavcopy_range(conn, start_date=START_DATE):
 def parse_purpose_multipliers(purpose_str, row_data):
     """Extracts all multipliers (splits, bonuses, rights) present inside a single PURPOSE string."""
     factors = []
-    p_lower = purpose_str.lower()
+    p_lower = str(purpose_str).lower()
 
     # 1. Check for Stock Splits (e.g., "Fv Split Rs.10/- To Rs.5/", "Split Us 64 Into 2 Parts")
     split_match = re.search(r"(?:fv\s*)?split.*?\b(\d+)\s*(?:/-)?\s*to\s*(?:re\.?|rs\.?)?\s*(\d+)", p_lower)
@@ -193,7 +193,7 @@ def parse_purpose_multipliers(purpose_str, row_data):
         if old_fv > new_fv > 0:
             factors.append(("SPLIT", new_fv / old_fv))
 
-    # 2. Check for Bonus Issues (e.g., "Bonus 1:1", "Bonus - 1:5")
+    # 2. Check for Bonus Issues (e.g., "Bonus 1:1", "Bonus - 1:5", "Div-30%/Bonus 1:1")
     bonus_match = re.search(r"bonus\s*(?:-\s*)?\b(\d+)\s*:\s*(\d+)", p_lower)
     if bonus_match:
         bonus_shares = float(bonus_match.group(1))
@@ -209,7 +209,7 @@ def parse_purpose_multipliers(purpose_str, row_data):
         if rights_shares + held_shares > 0:
             factors.append(("RIGHTS", held_shares / (rights_shares + held_shares)))
 
-    # 4. Fallback to direct FACTOR/RATIO columns for demergers or pre-calculated rows
+    # 4. Fallback for FACTOR/RATIO columns in Demerger CSVs
     if not factors:
         for col_name in ["FACTOR", "RATIO"]:
             if col_name in row_data:
@@ -224,7 +224,7 @@ def parse_purpose_multipliers(purpose_str, row_data):
 
 
 def process_all_corporate_actions(conn):
-    """Processes all uploaded corporate action CSV files cleanly."""
+    """Processes all uploaded corporate action CSV files cleanly with flexible date parsing."""
     cursor = conn.cursor()
     applied_count = 0
 
@@ -239,14 +239,15 @@ def process_all_corporate_actions(conn):
 
             for _, row in df.iterrows():
                 symbol = str(row.get("SYMBOL", "")).strip()
-                ex_date_raw = str(row.get("EX_DATE", row.get("EXDATE", ""))).strip()
+                ex_date_raw = str(row.get("EX_DATE", row.get("EXDATE", row.get("EX-DATE", "")))).strip()
                 purpose = str(row.get("PURPOSE", "")).strip()
 
-                if not symbol or symbol == "nan" or not ex_date_raw or ex_date_raw in ["-", "nan", ""]:
+                if not symbol or symbol in ["nan", ""] or not ex_date_raw or ex_date_raw in ["-", "nan", ""]:
                     continue
 
+                # Support multiple date formats (e.g. "25-Oct-2002", "2002-10-25", "25/10/2002")
                 try:
-                    ex_date = pd.to_datetime(ex_date_raw).strftime("%Y-%m-%d")
+                    ex_date = pd.to_datetime(ex_date_raw, dayfirst=True).strftime("%Y-%m-%d")
                 except Exception:
                     continue
 
