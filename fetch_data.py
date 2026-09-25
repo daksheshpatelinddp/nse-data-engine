@@ -199,21 +199,43 @@ def fetch_nse_bhavcopy_range(start_date=START_DATE):
 # PHASE 2: READ STORED DATA & APPLY ADJUSTMENTS
 # ==========================================
 
+def get_all_active_db_years():
+    """Returns a sorted list of all active database years from memory and disk."""
+    disk_years = {f.replace("nse_", "").replace(".db", "") for f in os.listdir(".") if f.startswith("nse_") and f.endswith(".db")}
+    memory_years = {name.replace("nse_", "").replace(".db", "") for name in db_connections.keys()}
+    return sorted(list(disk_years.union(memory_years)))
+
+
 def get_price_on_or_before(symbol, target_date_str, field="close"):
-    """Queries all database files to find latest available price on or before target_date_str."""
-    db_files = sorted([f for f in os.listdir(".") if f.startswith("nse_") and f.endswith(".db")], reverse=True)
+    """Queries memory buffers and disk databases for the latest recorded price on or before target_date_str."""
+    years = sorted([y for y in get_all_active_db_years() if y <= target_date_str[:4]], reverse=True)
     
-    for db_file in db_files:
-        year_str = db_file.replace("nse_", "").replace(".db", "")
-        if year_str > target_date_str[:4]:
-            continue
-            
+    for year_str in years:
         conn = get_db_connection(year_str)
         cursor = conn.cursor()
         cursor.execute(f'''
             SELECT {field} FROM ohlcv 
-            WHERE symbol = ? AND date <= ? AND is_index = 0
+            WHERE symbol = ? AND date <= ? AND is_index = 0 AND {field} > 0
             ORDER BY date DESC LIMIT 1
+        ''', (symbol, target_date_str))
+        row = cursor.fetchone()
+        if row and row[0] is not None and row[0] > 0:
+            return float(row[0])
+            
+    return None
+
+
+def get_price_on_or_after(symbol, target_date_str, field="open"):
+    """Queries memory buffers and disk databases for the earliest recorded price on or after target_date_str."""
+    years = sorted([y for y in get_all_active_db_years() if y >= target_date_str[:4]])
+    
+    for year_str in years:
+        conn = get_db_connection(year_str)
+        cursor = conn.cursor()
+        cursor.execute(f'''
+            SELECT {field} FROM ohlcv 
+            WHERE symbol = ? AND date >= ? AND is_index = 0 AND {field} > 0
+            ORDER BY date ASC LIMIT 1
         ''', (symbol, target_date_str))
         row = cursor.fetchone()
         if row and row[0] is not None and row[0] > 0:
