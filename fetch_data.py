@@ -132,8 +132,9 @@ def fetch_nse_bhavcopy_range(start_date=START_DATE):
         conn = get_db_connection(year_str)
         cursor = conn.cursor()
 
+        # Only skip if a full daily trading set (> 500 records) is already stored for this date
         cursor.execute("SELECT COUNT(*) FROM ohlcv WHERE date = ?", (date_str,))
-        if cursor.fetchone()[0] > 0:
+        if cursor.fetchone()[0] > 500:
             continue
 
         dt = datetime.strptime(date_str, "%Y-%m-%d")
@@ -190,7 +191,6 @@ def fetch_nse_bhavcopy_range(start_date=START_DATE):
             except Exception:
                 continue
 
-    # Commit and flush DB connections so all tables are fully readable
     close_all_databases()
     print(f"[PHASE 1 COMPLETE] All raw data saved to database files. Added {total_added} new records.")
 
@@ -199,53 +199,35 @@ def fetch_nse_bhavcopy_range(start_date=START_DATE):
 # PHASE 2: READ STORED DATA & APPLY ADJUSTMENTS
 # ==========================================
 
-def get_all_active_db_years():
-    """Returns a sorted list of all active database years from memory and disk."""
-    disk_years = {f.replace("nse_", "").replace(".db", "") for f in os.listdir(".") if f.startswith("nse_") and f.endswith(".db")}
-    memory_years = {name.replace("nse_", "").replace(".db", "") for name in db_connections.keys()}
-    return sorted(list(disk_years.union(memory_years)))
-
-
 def get_price_on_or_before(symbol, target_date_str, field="close"):
-    """Queries memory buffers and disk databases for the latest recorded price on or before target_date_str."""
-    years = sorted([y for y in get_all_active_db_years() if y <= target_date_str[:4]], reverse=True)
+    """Queries all existing database files for the latest available price on or before target_date_str."""
+    db_files = sorted([f for f in os.listdir(".") if f.startswith("nse_") and f.endswith(".db")], reverse=True)
     
-    for year_str in years:
-        conn = get_db_connection(year_str)
-        cursor = conn.cursor()
-        cursor.execute(f'''
-            SELECT {field} FROM ohlcv 
-            WHERE symbol = ? AND date <= ? AND is_index = 0 AND {field} > 0
-            ORDER BY date DESC LIMIT 1
-        ''', (symbol, target_date_str))
-        row = cursor.fetchone()
-        if row and row[0] is not None and row[0] > 0:
-            return float(row[0])
+    for db_file in db_files:
+        year_str = db_file.replace("nse_", "").replace(".db", "")
+        if year_str > target_date_str[:4]:
+            continue
+            
+        try:
+            conn = sqlite3.connect(db_file)
+            cursor = conn.cursor()
+            cursor.execute(f'''
+                SELECT {field} FROM ohlcv 
+                WHERE symbol = ? AND date <= ? AND is_index = 0
+                ORDER BY date DESC LIMIT 1
+            ''', (symbol, target_date_str))
+            row = cursor.fetchone()
+            conn.close()
+            if row and row[0] is not None and row[0] > 0:
+                return float(row[0])
+        except Exception:
+            continue
             
     return None
 
 
 def get_price_on_or_after(symbol, target_date_str, field="open"):
-    """Queries memory buffers and disk databases for the earliest recorded price on or after target_date_str."""
-    years = sorted([y for y in get_all_active_db_years() if y >= target_date_str[:4]])
-    
-    for year_str in years:
-        conn = get_db_connection(year_str)
-        cursor = conn.cursor()
-        cursor.execute(f'''
-            SELECT {field} FROM ohlcv 
-            WHERE symbol = ? AND date >= ? AND is_index = 0 AND {field} > 0
-            ORDER BY date ASC LIMIT 1
-        ''', (symbol, target_date_str))
-        row = cursor.fetchone()
-        if row and row[0] is not None and row[0] > 0:
-            return float(row[0])
-            
-    return None
-
-
-def get_price_on_or_after(symbol, target_date_str, field="open"):
-    """Queries all database files to find earliest available price on or after target_date_str."""
+    """Queries all existing database files for the earliest available price on or after target_date_str."""
     db_files = sorted([f for f in os.listdir(".") if f.startswith("nse_") and f.endswith(".db")])
     
     for db_file in db_files:
@@ -253,49 +235,65 @@ def get_price_on_or_after(symbol, target_date_str, field="open"):
         if year_str < target_date_str[:4]:
             continue
             
-        conn = get_db_connection(year_str)
-        cursor = conn.cursor()
-        cursor.execute(f'''
-            SELECT {field} FROM ohlcv 
-            WHERE symbol = ? AND date >= ? AND is_index = 0
-            ORDER BY date ASC LIMIT 1
-        ''', (symbol, target_date_str))
-        row = cursor.fetchone()
-        if row and row[0] is not None and row[0] > 0:
-            return float(row[0])
+        try:
+            conn = sqlite3.connect(db_file)
+            cursor = conn.cursor()
+            cursor.execute(f'''
+                SELECT {field} FROM ohlcv 
+                WHERE symbol = ? AND date >= ? AND is_index = 0
+                ORDER BY date ASC LIMIT 1
+            ''', (symbol, target_date_str))
+            row = cursor.fetchone()
+            conn.close()
+            if row and row[0] is not None and row[0] > 0:
+                return float(row[0])
+        except Exception:
+            continue
             
     return None
 
 
 def action_already_applied(symbol, ex_date, action_type):
-    """Checks if corporate action was already processed."""
+    """Checks if corporate action was already recorded."""
     db_files = [f for f in os.listdir(".") if f.startswith("nse_") and f.endswith(".db")]
     for db_file in db_files:
-        conn = sqlite3.connect(db_file)
-        cursor = conn.cursor()
-        cursor.execute('''
-            SELECT COUNT(*) FROM corporate_actions 
-            WHERE symbol = ? AND ex_date = ? AND action_type = ?
-        ''', (symbol, ex_date, action_type))
-        count = cursor.fetchone()[0]
-        conn.close()
-        if count > 0:
-            return True
+        try:
+            conn = sqlite3.connect(db_file)
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT COUNT(*) FROM corporate_actions 
+                WHERE symbol = ? AND ex_date = ? AND action_type = ?
+            ''', (symbol, ex_date, action_type))
+            count = cursor.fetchone()[0]
+            conn.close()
+            if count > 0:
+                return True
+        except Exception:
+            continue
     return False
 
 
-def calculate_demerger_factor(symbol, ex_date):
+def calculate_demerger_factor(symbol, ex_date, purpose_str=""):
     """Calculates Adjustment Factor: AF = (Ex-Date Open) / (Cum-Date Close)."""
+    today_str = datetime.now().strftime("%Y-%m-%d")
+    if ex_date > today_str:
+        print(f"[DEMERGER SKIPPED] {symbol} @ {ex_date}: Future ex-date.")
+        return None
+
     if action_already_applied(symbol, ex_date, "DEMERGER"):
         return None
 
-    dt_ex = datetime.strptime(ex_date, "%Y-%m-%d")
+    try:
+        dt_ex = datetime.strptime(ex_date, "%Y-%m-%d")
+    except ValueError:
+        return None
+
     dt_prev = (dt_ex - timedelta(days=1)).strftime("%Y-%m-%d")
     
-    # 1. Fetch Cum-Date Close from stored database
+    # 1. Fetch Cum-Date Close from database
     cum_close = get_price_on_or_before(symbol, dt_prev, field="close")
     
-    # 2. Fetch Ex-Date Open from stored database
+    # 2. Fetch Ex-Date Open from database
     ex_open = get_price_on_or_after(symbol, ex_date, field="open")
     
     if ex_open and cum_close and cum_close > 0:
@@ -306,6 +304,14 @@ def calculate_demerger_factor(symbol, ex_date):
         else:
             print(f"[DEMERGER SKIP] {symbol} @ {ex_date}: Factor {factor:.4f} outside range (0, 1)")
     else:
+        # Fallback to percentage description parsing if daily prices are missing
+        pct_match = re.search(r"(\d+(?:\.\d+)?)\s*%", str(purpose_str).lower())
+        if pct_match:
+            pct = float(pct_match.group(1))
+            if 0 < pct < 100:
+                fallback_factor = (100.0 - pct) / 100.0
+                print(f"[DEMERGER FALLBACK] {symbol} @ {ex_date}: Parsed percentage fallback factor = {fallback_factor:.4f}")
+                return fallback_factor
         print(f"[DEMERGER MISSING DATA] {symbol} @ {ex_date}: Cum-Close={cum_close}, Ex-Open={ex_open}")
             
     return None
@@ -351,15 +357,9 @@ def parse_purpose_multipliers(purpose_str, row_dict, symbol, ex_date):
 
     # 2. DEMERGER
     if "demerger" in p_lower or "de-merger" in p_lower or "demerg" in p_lower:
-        factor = calculate_demerger_factor(symbol, ex_date)
+        factor = calculate_demerger_factor(symbol, ex_date, purpose_str)
         if factor:
             factors.append(("DEMERGER", factor))
-        else:
-            pct_match = re.search(r"(\d+(?:\.\d+)?)\s*%", p_lower)
-            if pct_match:
-                pct = float(pct_match.group(1))
-                if 0 < pct < 100:
-                    factors.append(("DEMERGER", (100.0 - pct) / 100.0))
 
     # 3. BONUS
     bonus_match = re.search(r"bonus\s*(?:-\s*)?\b(\d+)\s*:\s*(\d+)", p_lower)
@@ -473,14 +473,9 @@ def apply_manual_overrides():
 
 
 def main():
-    # Phase 1: Download & store raw daily market data
     fetch_nse_bhavcopy_range(start_date=START_DATE)
-
-    # Phase 2: Read stored data, compute dynamic demerger ratios & apply adjustments
     process_all_corporate_actions()
     apply_manual_overrides()
-
-    # Final cleanup
     close_all_databases()
 
 
