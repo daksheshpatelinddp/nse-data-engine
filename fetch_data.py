@@ -292,7 +292,7 @@ def get_price_on_or_before(symbol, target_date_str, field="close"):
             cursor = conn.cursor()
             cursor.execute(f'''
                 SELECT {field} FROM ohlcv 
-                WHERE symbol = ? AND date <= ? AND is_index = 0
+                WHERE symbol = ? COLLATE NOCASE AND date <= ? AND is_index = 0
                 ORDER BY date DESC LIMIT 1
             ''', (symbol, target_date_str))
             row = cursor.fetchone()
@@ -332,7 +332,7 @@ def get_price_on_or_after(symbol, target_date_str, field="open"):
             cursor = conn.cursor()
             cursor.execute(f'''
                 SELECT {field} FROM ohlcv 
-                WHERE symbol = ? AND date >= ? AND is_index = 0
+                WHERE symbol = ? COLLATE NOCASE AND date >= ? AND is_index = 0
                 ORDER BY date ASC LIMIT 1
             ''', (symbol, target_date_str))
             row = cursor.fetchone()
@@ -354,7 +354,7 @@ def action_already_applied(symbol, ex_date, action_type):
             cursor = conn.cursor()
             cursor.execute('''
                 SELECT COUNT(*) FROM corporate_actions 
-                WHERE symbol = ? AND ex_date = ? AND action_type = ?
+                WHERE symbol = ? COLLATE NOCASE AND ex_date = ? AND action_type = ?
             ''', (symbol, ex_date, action_type))
             count = cursor.fetchone()[0]
             conn.close()
@@ -363,6 +363,47 @@ def action_already_applied(symbol, ex_date, action_type):
         except Exception:
             continue
     return False
+
+
+def debug_symbol_presence(symbol, ex_date, days=15):
+    """Diagnostic used only when a demerger factor can't be computed. Searches all db
+    files for anything resembling `symbol` (case/whitespace-insensitive via LIKE) within
+    +/- `days` of ex_date, and prints what it finds. This tells us whether the symbol
+    genuinely has no data that day (e.g. trading suspended for the corporate action) or
+    whether it exists under a slightly different stored string (case, extra characters)."""
+    try:
+        dt_ex = datetime.strptime(ex_date, "%Y-%m-%d")
+    except ValueError:
+        return
+
+    window_start = (dt_ex - timedelta(days=days)).strftime("%Y-%m-%d")
+    window_end = (dt_ex + timedelta(days=days)).strftime("%Y-%m-%d")
+
+    db_files = sorted([f for f in os.listdir(".") if f.startswith("nse_") and f.endswith(".db")])
+    found_rows = []
+
+    for db_file in db_files:
+        try:
+            conn = sqlite3.connect(db_file)
+            cursor = conn.cursor()
+            cursor.execute('''
+                SELECT date, symbol, open, close FROM ohlcv
+                WHERE symbol LIKE ? AND date BETWEEN ? AND ?
+                ORDER BY date ASC LIMIT 5
+            ''', (f"%{symbol}%", window_start, window_end))
+            rows = cursor.fetchall()
+            conn.close()
+            found_rows.extend(rows)
+        except Exception:
+            continue
+
+    if found_rows:
+        sample = ", ".join(f"{r[0]} sym='{r[1]}' O={r[2]} C={r[3]}" for r in found_rows[:5])
+        print(f"[DEBUG] Found {len(found_rows)}+ nearby row(s) for '{symbol}' via LIKE match: {sample}")
+    else:
+        print(f"[DEBUG] No row for '{symbol}' (any casing/spacing) found in {window_start}..{window_end} "
+              f"across {len(db_files)} db file(s). Likely trading was suspended that day, "
+              f"or the symbol differs entirely from what's in the CA file (renamed/delisted).")
 
 
 def calculate_demerger_factor(symbol, ex_date, purpose_str=""):
@@ -405,6 +446,7 @@ def calculate_demerger_factor(symbol, ex_date, purpose_str=""):
                 print(f"[DEMERGER FALLBACK] {symbol} @ {ex_date}: Parsed percentage fallback factor = {fallback_factor:.4f}")
                 return fallback_factor
         print(f"[DEMERGER MISSING DATA] {symbol} @ {ex_date}: Cum-Close={cum_close}, Ex-Open={ex_open}")
+        debug_symbol_presence(symbol, ex_date)
             
     return None
 
@@ -492,7 +534,7 @@ def apply_factor_across_all_dbs(symbol, ex_date, factor, purpose, action_type):
                 high = ROUND(high * ?, 2),
                 low = ROUND(low * ?, 2),
                 close = ROUND(close * ?, 2)
-            WHERE symbol = ? AND date < ? AND is_index = 0
+            WHERE symbol = ? COLLATE NOCASE AND date < ? AND is_index = 0
         ''', (factor, factor, factor, factor, symbol, ex_date))
 
         conn.commit()
@@ -513,7 +555,10 @@ def process_all_corporate_actions():
             df.columns = [str(c).strip().upper().replace(" ", "_") for c in df.columns]
 
             for _, row in df.iterrows():
-                symbol = str(row.get("SYMBOL", "")).strip()
+                # Uppercase to match NSE bhavcopy symbol casing exactly - a case
+                # mismatch here silently returns "no data" even when the price
+                # exists in the db for that date, since SQLite '=' is case-sensitive.
+                symbol = str(row.get("SYMBOL", "")).strip().upper()
                 ex_date_raw = str(row.get("EX-DATE", row.get("EX_DATE", row.get("EXDATE", "")))).strip()
                 purpose = str(row.get("PURPOSE", "")).strip()
 
