@@ -59,5 +59,6 @@ jobs:
         git config --global user.email "actions@github.com"
         git add nse_*.db
         git commit -m "Automated update: Yearly NSE Databases" || exit 0
+        git stash --include-untracked
         git pull --rebase origin main
         git push origin main
