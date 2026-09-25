@@ -108,12 +108,65 @@ def generate_date_range(start_date_str):
     return date_list
 
 
+def collect_required_dates(buffer_days=10):
+    """Scans all CA_FILES and returns the minimal sorted list of weekday dates needed to
+    resolve every event's cum-close (just before ex-date) and ex-open (on/after ex-date).
+
+    buffer_days is a calendar-day cushion on each side of ex-date, to make sure a nearby
+    trading day is available even across weekends/exchange holidays.
+    """
+    required = set()
+
+    for file_path in CA_FILES:
+        if not os.path.exists(file_path):
+            continue
+        try:
+            df = pd.read_csv(file_path, skipinitialspace=True)
+            df.columns = [str(c).strip().upper().replace(" ", "_") for c in df.columns]
+
+            for _, row in df.iterrows():
+                ex_date_raw = str(row.get("EX-DATE", row.get("EX_DATE", row.get("EXDATE", "")))).strip()
+                if not ex_date_raw or ex_date_raw in ["-", "nan", ""]:
+                    continue
+                try:
+                    ex_date = pd.to_datetime(ex_date_raw, dayfirst=True)
+                except Exception:
+                    continue
+
+                window_start = ex_date - timedelta(days=buffer_days)
+                window_end = ex_date + timedelta(days=buffer_days)
+                d = window_start
+                while d <= window_end:
+                    if d.weekday() < 5:
+                        required.add(d.strftime("%Y-%m-%d"))
+                    d += timedelta(days=1)
+        except Exception as e:
+            print(f"[WARNING] Could not scan {file_path} for required dates: {e}")
+
+    return sorted(required)
+
+
+def fetch_targeted_dates_for_corporate_actions():
+    """Backfill entry point: downloads only the dates needed to price every corporate
+    action correctly, instead of every trading day since 2000. Much faster and avoids
+    re-creating a huge multi-decade dataset."""
+    date_list = collect_required_dates()
+    if not date_list:
+        print("[TARGETED FETCH] No corporate action dates found to backfill.")
+        return
+    fetch_nse_bhavcopy_range(date_list=date_list)
+
+
 # ==========================================
 # PHASE 1: DOWNLOAD AND STORE BASE DATA
 # ==========================================
 
-def fetch_nse_bhavcopy_range(start_date=START_DATE):
-    """Downloads daily Bhavcopies and stores all raw OHLCV data into DB files first."""
+def fetch_nse_bhavcopy_range(start_date=START_DATE, date_list=None):
+    """Downloads daily Bhavcopies and stores all raw OHLCV data into DB files first.
+
+    If date_list is given, only those specific dates are fetched (targeted mode).
+    Otherwise every weekday from start_date to today is fetched (full backfill mode).
+    """
     session = requests.Session()
     session.headers.update(HEADERS)
 
@@ -122,10 +175,13 @@ def fetch_nse_bhavcopy_range(start_date=START_DATE):
     except Exception as e:
         print(f"[WARNING] Session setup issue: {e}")
 
-    date_list = generate_date_range(start_date)
-    total_added = 0
+    if date_list is None:
+        date_list = generate_date_range(start_date)
+        print(f"[PHASE 1 START] Downloading and storing Bhavcopies from {start_date} to present...")
+    else:
+        print(f"[PHASE 1 START] Downloading and storing Bhavcopies for {len(date_list)} targeted date(s)...")
 
-    print(f"[PHASE 1 START] Downloading and storing Bhavcopies from {start_date} to present...")
+    total_added = 0
 
     for date_str in date_list:
         year_str = date_str[:4]
@@ -499,7 +555,13 @@ def apply_manual_overrides():
 
 
 def main():
-    fetch_nse_bhavcopy_range(start_date=START_DATE)
+    if os.getenv("TARGETED_CA_BACKFILL", "").strip().lower() in ("1", "true", "yes"):
+        # One-off mode: only fetch the specific dates corporate-action files need,
+        # skipping the full year-by-year historical download.
+        fetch_targeted_dates_for_corporate_actions()
+    else:
+        fetch_nse_bhavcopy_range(start_date=START_DATE)
+
     process_all_corporate_actions()
     apply_manual_overrides()
     close_all_databases()
