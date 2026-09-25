@@ -188,9 +188,16 @@ def fetch_nse_bhavcopy_range(start_date=START_DATE, date_list=None):
         conn = get_db_connection(year_str)
         cursor = conn.cursor()
 
-        # Only skip if a full daily trading set (> 500 records) is already stored for this date
-        cursor.execute("SELECT COUNT(*) FROM ohlcv WHERE date = ?", (date_str,))
-        if cursor.fetchone()[0] > 500:
+        # Skip only if a full daily trading set is already stored AND the prices are
+        # real (not the zero-price corruption from a column-name mismatch). This lets
+        # a re-run automatically repair previously-corrupted dates via INSERT OR
+        # REPLACE, without needing a separate manual cleanup pass.
+        cursor.execute(
+            "SELECT COUNT(*), SUM(CASE WHEN close > 0 THEN 1 ELSE 0 END) FROM ohlcv WHERE date = ?",
+            (date_str,)
+        )
+        total_rows, nonzero_rows = cursor.fetchone()
+        if total_rows and total_rows > 500 and nonzero_rows and nonzero_rows > 100:
             continue
 
         dt = datetime.strptime(date_str, "%Y-%m-%d")
@@ -227,14 +234,32 @@ def fetch_nse_bhavcopy_range(start_date=START_DATE, date_list=None):
                     if series_col:
                         df = df[df[series_col].isin(['EQ', 'BE'])]
 
+                    # NSE fully switched to the UDiFF bhavcopy format on 2024-07-08
+                    # (Circular 62424), which uses OpnPric/HghPric/LwPric/ClsPric/
+                    # TtlTradgVol - NOT OpnPrc/ClsPrc/TtlTrdQty. The old pre-UDiFF
+                    # archive format (used for the historical URL pattern) used
+                    # OPEN/HIGH/LOW/CLOSE/TOTTRDQTY. Check UDiFF names first, then
+                    # the old names, so both eras of file map correctly instead of
+                    # silently defaulting every price to 0.0.
                     df['symbol'] = df[symbol_col]
-                    df['open'] = df['OPNPRC'] if 'OPNPRC' in df.columns else df.get('OPEN', 0.0)
-                    df['high'] = df['HGHPRC'] if 'HGHPRC' in df.columns else df.get('HIGH', 0.0)
-                    df['low'] = df['LWPRC'] if 'LWPRC' in df.columns else df.get('LOW', 0.0)
-                    df['close'] = df['CLSPRC'] if 'CLSPRC' in df.columns else df.get('CLOSE', 0.0)
-                    df['volume'] = df['TTLTRDQTY'] if 'TTLTRDQTY' in df.columns else df.get('TOTTRDQTY', 0)
+                    df['open'] = df['OPNPRIC'] if 'OPNPRIC' in df.columns else df.get('OPEN', pd.NA)
+                    df['high'] = df['HGHPRIC'] if 'HGHPRIC' in df.columns else df.get('HIGH', pd.NA)
+                    df['low'] = df['LWPRIC'] if 'LWPRIC' in df.columns else df.get('LOW', pd.NA)
+                    df['close'] = df['CLSPRIC'] if 'CLSPRIC' in df.columns else df.get('CLOSE', pd.NA)
+                    df['volume'] = df['TTLTRADGVOL'] if 'TTLTRADGVOL' in df.columns else df.get('TOTTRDQTY', pd.NA)
                     df['date'] = date_str
                     df['is_index'] = 0
+
+                    # Sanity check: if every row's close price is null/zero, we failed
+                    # to find the right columns for this file's format - store nothing
+                    # rather than silently writing a day of zeroed-out prices, and
+                    # surface it as a failure so it's visible in the log.
+                    close_numeric = pd.to_numeric(df['close'], errors='coerce').fillna(0)
+                    if len(df) > 0 and (close_numeric > 0).sum() == 0:
+                        last_error = (f"parsed {len(df)} rows from {url} but every close price "
+                                      f"is 0/null - unrecognized column format, columns were: "
+                                      f"{list(df.columns)[:15]}")
+                        continue
 
                     records = df[['symbol', 'date', 'open', 'high', 'low', 'close', 'volume', 'is_index']].to_dict('records')
 
