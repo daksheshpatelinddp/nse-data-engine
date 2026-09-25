@@ -204,6 +204,8 @@ def fetch_nse_bhavcopy_range(start_date=START_DATE, date_list=None):
             f"https://archives.nseindia.com/content/historical/EQUITIES/{year}/{month}/cm{day_str}{month}{year}bhav.csv.zip"
         ]
 
+        fetched_ok = False
+        last_error = None
         for url in urls:
             try:
                 res = session.get(url, timeout=10)
@@ -219,6 +221,7 @@ def fetch_nse_bhavcopy_range(start_date=START_DATE, date_list=None):
                     series_col = 'SCTYSRS' if 'SCTYSRS' in df.columns else ('SERIES' if 'SERIES' in df.columns else None)
 
                     if not symbol_col:
+                        last_error = f"no symbol column found in {url}"
                         continue
 
                     if series_col:
@@ -243,9 +246,16 @@ def fetch_nse_bhavcopy_range(start_date=START_DATE, date_list=None):
                     conn.commit()
                     total_added += len(records)
                     print(f"[STORED] Downloaded {date_str} -> nse_{year_str}.db ({len(records)} records)")
+                    fetched_ok = True
                     break
-            except Exception:
+                else:
+                    last_error = f"HTTP {res.status_code} from {url}"
+            except Exception as e:
+                last_error = f"{type(e).__name__}: {e} ({url})"
                 continue
+
+        if not fetched_ok:
+            print(f"[FETCH FAILED] {date_str}: both URL patterns failed. Last error: {last_error}")
 
     close_all_databases()
     print(f"[PHASE 1 COMPLETE] All raw data saved to database files. Added {total_added} new records.")
@@ -555,12 +565,13 @@ def apply_manual_overrides():
 
 
 def main():
-    if os.getenv("TARGETED_CA_BACKFILL", "").strip().lower() in ("1", "true", "yes"):
-        # One-off mode: only fetch the specific dates corporate-action files need,
-        # skipping the full year-by-year historical download.
-        fetch_targeted_dates_for_corporate_actions()
-    else:
-        fetch_nse_bhavcopy_range(start_date=START_DATE)
+    # Normal range fetch (recent/incremental data, per START_DATE/END_DATE).
+    fetch_nse_bhavcopy_range(start_date=START_DATE)
+
+    # Always also backfill the specific dates corporate-action files need, even if they
+    # fall outside START_DATE. This is cheap: dates already present (>500 records) are
+    # skipped automatically, so on most runs this does nothing but a quick DB check.
+    fetch_targeted_dates_for_corporate_actions()
 
     process_all_corporate_actions()
     apply_manual_overrides()
