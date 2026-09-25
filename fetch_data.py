@@ -33,7 +33,6 @@ def get_db_connection(year_str):
     db_name = f"nse_{year_str}.db"
     
     if db_name not in db_connections:
-        # Check if existing file is corrupted
         if os.path.exists(db_name):
             try:
                 test_conn = sqlite3.connect(db_name)
@@ -191,11 +190,72 @@ def fetch_nse_bhavcopy_range(start_date=START_DATE):
     print(f"[COMPLETE] EOD fetch finished. Added {total_added} records.")
 
 
+def get_price_on_or_before(symbol, target_date_str, field="close"):
+    """Queries across all yearly DBs to find the latest recorded price on or before target_date_str."""
+    db_files = sorted([f for f in os.listdir(".") if f.startswith("nse_") and f.endswith(".db")], reverse=True)
+    
+    for db_file in db_files:
+        year_str = db_file.replace("nse_", "").replace(".db", "")
+        if year_str > target_date_str[:4]:
+            continue
+            
+        conn = get_db_connection(year_str)
+        cursor = conn.cursor()
+        cursor.execute(f'''
+            SELECT {field} FROM ohlcv 
+            WHERE symbol = ? AND date <= ? AND is_index = 0
+            ORDER BY date DESC LIMIT 1
+        ''', (symbol, target_date_str))
+        row = cursor.fetchone()
+        if row and row[0] is not None and row[0] > 0:
+            return float(row[0])
+            
+    return None
+
+
+def get_price_on_date(symbol, date_str, field="open"):
+    """Retrieves exact field price for a symbol on a given date."""
+    year_str = date_str[:4]
+    db_file = f"nse_{year_str}.db"
+    if not os.path.exists(db_file):
+        return None
+        
+    conn = get_db_connection(year_str)
+    cursor = conn.cursor()
+    cursor.execute(f'''
+        SELECT {field} FROM ohlcv 
+        WHERE symbol = ? AND date = ? AND is_index = 0
+    ''', (symbol, date_str))
+    row = cursor.fetchone()
+    if row and row[0] is not None and row[0] > 0:
+        return float(row[0])
+        
+    return None
+
+
+def calculate_demerger_factor(symbol, ex_date):
+    """Calculates AF = (Ex-Date Open) / (Cum-Date Close)."""
+    ex_open = get_price_on_date(symbol, ex_date, field="open")
+    
+    # Calculate previous trading day date string
+    dt_ex = datetime.strptime(ex_date, "%Y-%m-%d")
+    dt_prev = (dt_ex - timedelta(days=1)).strftime("%Y-%m-%d")
+    
+    # Fetch last available closing price on or prior to the day before ex_date
+    cum_close = get_price_on_or_before(symbol, dt_prev, field="close")
+    
+    if ex_open and cum_close and cum_close > 0:
+        factor = ex_open / cum_close
+        if 0.0 < factor < 1.0:
+            return factor
+            
+    return None
+
+
 def extract_split_ratio(purpose_str, row_dict):
     """Reliably extracts stock split factors from NSE split.csv exports."""
     p_lower = str(purpose_str).lower().strip()
 
-    # Pattern A: Matches "Rs.10/- To Re.1/-", "10 To 2", "Rs 10 To Rs 1", "Fv Split 10 To 5"
     m = re.search(r"(?:rs|re|\.|\s)*(\d+(?:\.\d+)?)\s*(?:/-)?\s*to\s*(?:rs|re|\.|\s)*(\d+(?:\.\d+)?)", p_lower)
     if m:
         try:
@@ -205,7 +265,6 @@ def extract_split_ratio(purpose_str, row_dict):
         except ValueError:
             pass
 
-    # Pattern B: Direct Face Value column matching if PURPOSE text doesn't contain numeric values
     old_fv = row_dict.get('FACE_VALUE', row_dict.get('FACEVALUE', row_dict.get('OLD_FV', None)))
     new_fv = row_dict.get('NEW_FACE_VALUE', row_dict.get('NEW_FV', row_dict.get('NEW_FACEVALUE', None)))
 
@@ -220,24 +279,29 @@ def extract_split_ratio(purpose_str, row_dict):
     return None
 
 
-def parse_purpose_multipliers(purpose_str, row_dict):
+def parse_purpose_multipliers(purpose_str, row_dict, symbol, ex_date):
     """Processes corporate action types (Splits, Demergers, Bonuses, Rights)."""
     factors = []
     p_lower = str(purpose_str).lower()
 
-    # 1. SPLIT (Matches "split", "sub-division", "subdivision", "fv", or "face value")
-    if any(k in p_lower for k in ["split", "sub-division", "sub division", "subdivision", "fv", "face value"]):
+    # 1. SPLIT
+    if any(k in p_lower for k in ["split", "sub-division", "subdivision", "fv", "face value"]):
         factor = extract_split_ratio(purpose_str, row_dict)
         if factor and 0.0 < factor < 1.0:
             factors.append(("SPLIT", factor))
 
-    # 2. DEMERGER
+    # 2. DEMERGER (Automated Formula: Ex-Date Open / Cum-Date Close)
     if "demerger" in p_lower or "de-merger" in p_lower or "demerg" in p_lower:
-        pct_match = re.search(r"(\d+(?:\.\d+)?)\s*%", p_lower)
-        if pct_match:
-            pct = float(pct_match.group(1))
-            if 0 < pct < 100:
-                factors.append(("DEMERGER", (100.0 - pct) / 100.0))
+        factor = calculate_demerger_factor(symbol, ex_date)
+        if factor:
+            factors.append(("DEMERGER", factor))
+        else:
+            # Fallback to regex percentage parser if market prices are unavailable
+            pct_match = re.search(r"(\d+(?:\.\d+)?)\s*%", p_lower)
+            if pct_match:
+                pct = float(pct_match.group(1))
+                if 0 < pct < 100:
+                    factors.append(("DEMERGER", (100.0 - pct) / 100.0))
 
     # 3. BONUS
     bonus_match = re.search(r"bonus\s*(?:-\s*)?\b(\d+)\s*:\s*(\d+)", p_lower)
@@ -310,7 +374,7 @@ def process_all_corporate_actions():
                     continue
 
                 row_dict = row.to_dict()
-                events = parse_purpose_multipliers(purpose, row_dict)
+                events = parse_purpose_multipliers(purpose, row_dict, symbol, ex_date)
 
                 for action_type, factor in events:
                     if 0.0 < factor < 1.0:
