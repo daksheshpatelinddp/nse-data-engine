@@ -6,13 +6,17 @@ on:
   workflow_dispatch:
     inputs:
       start_date:
-        description: 'Start Date (YYYY-MM-DD)'
+        description: 'Start Date (YYYY-MM-DD) - only used for manual runs'
         required: false
         default: '2000-01-01'
       end_date:
         description: 'End Date (YYYY-MM-DD)'
         required: false
         default: ''
+      run_ca_backfill:
+        description: 'Also backfill historical corporate-action dates (slow, one-time; leave unchecked for normal runs)'
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -47,11 +51,50 @@ jobs:
                     os.remove(f)
         "
 
+    - name: Determine Fetch Date Range
+      id: dates
+      run: |
+        if [ "${{ github.event_name }}" = "schedule" ]; then
+          # Scheduled runs: find the most recent date already stored across every
+          # yearly db, and fetch from the day after that through yesterday (today's
+          # bhavcopy usually isn't published yet when this runs). On a normal day
+          # this resolves to exactly one missing trading day; if a prior run ever
+          # failed, it self-heals by picking up wherever it left off instead of
+          # re-scanning full history.
+          LAST_DATE=$(python3 -c "
+        import os, sqlite3
+        dates = []
+        for f in os.listdir('.'):
+            if f.startswith('nse_') and f.endswith('.db') and f[4:8].isdigit():
+                try:
+                    conn = sqlite3.connect(f)
+                    row = conn.execute('SELECT MAX(date) FROM ohlcv').fetchone()
+                    conn.close()
+                    if row and row[0]:
+                        dates.append(row[0])
+                except Exception:
+                    pass
+        print(max(dates) if dates else '')
+        ")
+          if [ -n "$LAST_DATE" ]; then
+            START=$(date -d "$LAST_DATE + 1 day" +%Y-%m-%d)
+          else
+            START=$(date -d '1 day ago' +%Y-%m-%d)
+          fi
+          END=$(date -d '1 day ago' +%Y-%m-%d)
+          echo "start_date=$START" >> "$GITHUB_OUTPUT"
+          echo "end_date=$END" >> "$GITHUB_OUTPUT"
+        else
+          echo "start_date=${{ github.event.inputs.start_date }}" >> "$GITHUB_OUTPUT"
+          echo "end_date=${{ github.event.inputs.end_date }}" >> "$GITHUB_OUTPUT"
+        fi
+
     - name: Run Fetcher Script
       run: python fetch_data.py
       env:
-        START_DATE: ${{ github.event.inputs.start_date || '2000-01-01' }}
-        END_DATE: ${{ github.event.inputs.end_date || '' }}
+        START_DATE: ${{ steps.dates.outputs.start_date || '2000-01-01' }}
+        END_DATE: ${{ steps.dates.outputs.end_date || '' }}
+        RUN_CA_BACKFILL: ${{ github.event.inputs.run_ca_backfill || 'false' }}
 
     - name: Commit and Push Updated Databases
       run: |
