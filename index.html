@@ -4,59 +4,55 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>AmiBroker Web Workstation</title>
-    <!-- Lightweight Charts Library -->
     <script src="https://unpkg.com/lightweight-charts/dist/lightweight-charts.standalone.production.js"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #12151e; color: #d1d4dc; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0e1118; color: #d1d4dc; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
         
-        /* Top Navigation Header */
-        header { background: #1b1e2b; border-bottom: 1px solid #2a2e3d; padding: 8px 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-        .logo { font-weight: bold; color: #2962ff; font-size: 1.1rem; margin-right: 8px; }
-        select, button { background: #2a2e3d; color: #e0e3eb; border: 1px solid #363a4e; border-radius: 4px; padding: 6px 12px; font-size: 0.85rem; cursor: pointer; outline: none; }
+        /* Top Navigation Bar */
+        header { background: #161a25; border-bottom: 1px solid #232736; padding: 6px 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+        .logo { font-weight: bold; color: #2962ff; font-size: 1.1rem; margin-right: 6px; }
+        select, button { background: #232736; color: #e0e3eb; border: 1px solid #31364a; border-radius: 4px; padding: 5px 10px; font-size: 0.82rem; cursor: pointer; outline: none; }
         select:focus, button:focus { border-color: #2962ff; }
-        button:hover { background: #363a4e; }
+        button:hover { background: #2c3244; }
         .btn-active { background: #2962ff !important; color: white; border-color: #2962ff; }
         
-        /* Tabs Bar */
-        .tabs-bar { background: #151823; display: flex; align-items: center; border-bottom: 1px solid #2a2e3d; overflow-x: auto; white-space: nowrap; }
-        .tab { padding: 8px 16px; background: #1b1e2b; border-right: 1px solid #2a2e3d; color: #787b86; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; font-size: 0.85rem; user-select: none; }
-        .tab.active { background: #12151e; color: #2962ff; border-top: 2px solid #2962ff; font-weight: 600; }
-        .tab .close-tab { border-radius: 50%; width: 16px; height: 16px; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; }
-        .tab .close-tab:hover { background: #363a4e; color: white; }
-        .add-tab-btn { padding: 6px 12px; background: transparent; border: none; color: #2962ff; font-size: 1.2rem; cursor: pointer; }
+        /* Tab Navigation Bar */
+        .tabs-bar { background: #12151e; display: flex; align-items: center; border-bottom: 1px solid #232736; overflow-x: auto; white-space: nowrap; }
+        .tab { padding: 7px 14px; background: #181c28; border-right: 1px solid #232736; color: #787b86; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; font-size: 0.82rem; user-select: none; }
+        .tab.active { background: #0e1118; color: #2962ff; border-top: 2px solid #2962ff; font-weight: 600; }
+        .tab .close-tab { border-radius: 50%; width: 15px; height: 15px; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; }
+        .tab .close-tab:hover { background: #2c3244; color: white; }
+        .add-tab-btn { padding: 4px 10px; background: transparent; border: none; color: #2962ff; font-size: 1.2rem; cursor: pointer; }
         
         /* Main Workspace Container */
         #workspace { flex: 1; position: relative; width: 100%; height: 100%; display: flex; flex-direction: column; }
         .tab-content { display: none; flex: 1; flex-direction: column; width: 100%; height: 100%; position: relative; }
         .tab-content.active { display: flex; }
         
-        /* Dual Pane Layout */
-        .pane-upper { flex: 7; position: relative; width: 100%; border-bottom: 1px solid #2a2e3d; }
+        /* AmiBroker Dual Pane Layout */
+        .pane-upper { flex: 7; position: relative; width: 100%; border-bottom: 2px solid #232736; }
         .pane-lower { flex: 3; position: relative; width: 100%; }
         
-        /* Overlay Controls inside Tab */
-        .pane-overlay { position: absolute; top: 10px; left: 10px; z-index: 10; display: flex; gap: 6px; flex-wrap: wrap; background: rgba(27, 30, 43, 0.85); padding: 4px 8px; border-radius: 4px; }
+        /* Pane Controls Overlay */
+        .pane-controls { position: absolute; top: 8px; left: 8px; z-index: 10; display: flex; gap: 6px; flex-wrap: wrap; background: rgba(22, 26, 37, 0.85); padding: 4px 8px; border-radius: 4px; border: 1px solid #232736; }
         
-        /* Status Badge */
         .status-badge { margin-left: auto; font-size: 0.75rem; padding: 3px 8px; border-radius: 3px; font-weight: 600; }
         .status-online { background: rgba(38, 166, 154, 0.2); color: #26a69a; }
-        .status-loading { background: rgba(255, 179, 0, 0.2); color: #ffb300; }
+        .status-error { background: rgba(239, 83, 80, 0.2); color: #ef5350; }
     </style>
 </head>
 <body>
 
     <header>
         <div class="logo">AmiBroker</div>
-        <select id="symbolSelect">
-            <option value="">Loading symbols...</option>
-        </select>
+        <select id="symbolSelect"><option value="">Loading symbols...</option></select>
         <button id="loadBtn">Load Symbol</button>
-        <div id="statusBadge" class="status-badge status-loading">Connecting...</div>
+        <div id="statusBadge" class="status-badge status-online">Initializing...</div>
     </header>
 
     <div class="tabs-bar" id="tabsBar">
-        <button class="add-tab-btn" id="addTabBtn" title="New Chart Tab">+</button>
+        <button class="add-tab-btn" id="addTabBtn" title="New AmiBroker Tab">+</button>
     </div>
 
     <div id="workspace"></div>
@@ -65,14 +61,14 @@
         const API_URL = window.location.origin;
         let availableSymbols = [];
         let tabCount = 0;
-        let tabs = {}; // Holds tab state, charts, and series references
+        let tabs = {};
         let activeTabId = null;
 
-        // Fetch symbol dropdown list on load
+        // Load Stock Symbols on startup
         async function fetchSymbols() {
             try {
                 const res = await fetch(`${API_URL}/api/symbols`);
-                if (!res.ok) throw new Error("Failed to load symbols");
+                if (!res.ok) throw new Error("No backend connection");
                 availableSymbols = await res.json();
                 
                 const select = document.getElementById('symbolSelect');
@@ -84,20 +80,17 @@
                     select.appendChild(opt);
                 });
                 
-                document.getElementById('statusBadge').textContent = `${availableSymbols.length} Symbols Ready`;
+                document.getElementById('statusBadge').textContent = `${availableSymbols.length} Symbols`;
                 document.getElementById('statusBadge').className = 'status-badge status-online';
 
-                // Create initial default tab
-                if (availableSymbols.length > 0) {
-                    createNewTab(availableSymbols[0]);
-                }
+                if (availableSymbols.length > 0) createNewTab(availableSymbols[0]);
             } catch (err) {
                 document.getElementById('statusBadge').textContent = 'No DB Data';
-                document.getElementById('statusBadge').className = 'status-badge';
+                document.getElementById('statusBadge').className = 'status-badge status-error';
             }
         }
 
-        // Technical Analysis Indicator Calculations
+        // Indicator Logic
         function calculateSMA(data, period) {
             let res = [];
             for (let i = 0; i < data.length; i++) {
@@ -127,6 +120,20 @@
             return res;
         }
 
+        function calculateBollingerBands(data, period = 20, mult = 2) {
+            let upper = [], lower = [];
+            for (let i = 0; i < data.length; i++) {
+                if (i < period - 1) continue;
+                let slice = data.slice(i - period + 1, i + 1);
+                let mean = slice.reduce((a, b) => a + b.close, 0) / period;
+                let variance = slice.reduce((a, b) => a + Math.pow(b.close - mean, 2), 0) / period;
+                let stdDev = Math.sqrt(variance);
+                upper.push({ time: data[i].time, value: mean + (stdDev * mult) });
+                lower.push({ time: data[i].time, value: mean - (stdDev * mult) });
+            }
+            return { upper, lower };
+        }
+
         function calculateRSI(data, period = 14) {
             let res = [];
             if (data.length <= period) return res;
@@ -137,15 +144,13 @@
                 if (diff >= 0) gains += diff; else losses += Math.abs(diff);
             }
 
-            let avgGain = gains / period;
-            let avgLoss = losses / period;
+            let avgGain = gains / period, avgLoss = losses / period;
             let rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
             res.push({ time: data[period].time, value: 100 - (100 / (1 + rs)) });
 
             for (let i = period + 1; i < data.length; i++) {
                 let diff = data[i].close - data[i - 1].close;
-                let gain = diff >= 0 ? diff : 0;
-                let loss = diff < 0 ? Math.abs(diff) : 0;
+                let gain = diff >= 0 ? diff : 0, loss = diff < 0 ? Math.abs(diff) : 0;
                 avgGain = (avgGain * (period - 1) + gain) / period;
                 avgLoss = (avgLoss * (period - 1) + loss) / period;
                 rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
@@ -154,28 +159,13 @@
             return res;
         }
 
-        function calculateBollingerBands(data, period = 20, stdDevMult = 2) {
-            let upper = [], lower = [];
-            for (let i = 0; i < data.length; i++) {
-                if (i < period - 1) continue;
-                let slice = data.slice(i - period + 1, i + 1);
-                let mean = slice.reduce((a, b) => a + b.close, 0) / period;
-                let variance = slice.reduce((a, b) => a + Math.pow(b.close - mean, 2), 0) / period;
-                let stdDev = Math.sqrt(variance);
-                
-                upper.push({ time: data[i].time, value: mean + (stdDev * stdDevMult) });
-                lower.push({ time: data[i].time, value: mean - (stdDev * stdDevMult) });
-            }
-            return { upper, lower };
-        }
-
         // Create New Tab
         function createNewTab(symbol) {
             tabCount++;
             const tabId = `tab-${tabCount}`;
             const targetSymbol = symbol || (availableSymbols[0] || 'NSE');
 
-            // 1. Add Tab Header Button
+            // 1. Tab Button
             const tabsBar = document.getElementById('tabsBar');
             const addBtn = document.getElementById('addTabBtn');
             const tabEl = document.createElement('div');
@@ -188,82 +178,77 @@
             tabEl.onclick = () => switchTab(tabId);
             tabsBar.insertBefore(tabEl, addBtn);
 
-            // 2. Add Tab Workspace Content
+            // 2. Tab Workspace Layout
             const workspace = document.getElementById('workspace');
             const contentEl = document.createElement('div');
             contentEl.className = 'tab-content';
             contentEl.id = `content-${tabId}`;
             contentEl.innerHTML = `
                 <div class="pane-upper" id="upper-${tabId}">
-                    <div class="pane-overlay">
+                    <div class="pane-controls">
+                        <select onchange="changeChartStyle('${tabId}', this.value)">
+                            <option value="candles">Candles</option>
+                            <option value="line">Line</option>
+                        </select>
                         <button class="btn-sma" onclick="toggleOverlay('${tabId}', 'sma')">SMA 20</button>
                         <button class="btn-ema" onclick="toggleOverlay('${tabId}', 'ema')">EMA 50</button>
-                        <button class="btn-bb" onclick="toggleOverlay('${tabId}', 'bb')">Bollinger Bands</button>
+                        <button class="btn-bb" onclick="toggleOverlay('${tabId}', 'bb')">BB 20,2</button>
                     </div>
                 </div>
                 <div class="pane-lower" id="lower-${tabId}">
-                    <div class="pane-overlay">
-                        <button class="btn-vol btn-active" onclick="toggleLowerIndicator('${tabId}', 'volume')">Volume</button>
-                        <button class="btn-rsi" onclick="toggleLowerIndicator('${tabId}', 'rsi')">RSI 14</button>
+                    <div class="pane-controls">
+                        <button class="btn-vol btn-active" onclick="setLowerIndicator('${tabId}', 'volume')">Volume</button>
+                        <button class="btn-rsi" onclick="setLowerIndicator('${tabId}', 'rsi')">RSI 14</button>
                     </div>
                 </div>
             `;
             workspace.appendChild(contentEl);
 
-            // 3. Initialize Dual-Pane Charts
-            const upperContainer = document.getElementById(`upper-${tabId}`);
-            const lowerContainer = document.getElementById(`lower-${tabId}`);
-
-            const upperChart = LightweightCharts.createChart(upperContainer, {
-                layout: { backgroundColor: '#12151e', textColor: '#d1d4dc' },
-                grid: { vertLines: { color: '#1f2434' }, horzLines: { color: '#1f2434' } },
-                crosshair: { mode: LightweightCharts.CrosshairMode.Normal },
-                rightPriceScale: { borderColor: '#2a2e3d' },
-                timeScale: { borderColor: '#2a2e3d', visible: false }
+            // 3. Initialize Independent Upper and Lower Panes
+            const upperChart = LightweightCharts.createChart(document.getElementById(`upper-${tabId}`), {
+                layout: { backgroundColor: '#0e1118', textColor: '#d1d4dc' },
+                grid: { vertLines: { color: '#1c202e' }, horzLines: { color: '#1c202e' } },
+                rightPriceScale: { borderColor: '#232736' },
+                timeScale: { borderColor: '#232736', visible: false }
             });
 
-            const lowerChart = LightweightCharts.createChart(lowerContainer, {
-                layout: { backgroundColor: '#12151e', textColor: '#d1d4dc' },
-                grid: { vertLines: { color: '#1f2434' }, horzLines: { color: '#1f2434' } },
-                rightPriceScale: { borderColor: '#2a2e3d' },
-                timeScale: { borderColor: '#2a2e3d', visible: true }
+            const lowerChart = LightweightCharts.createChart(document.getElementById(`lower-${tabId}`), {
+                layout: { backgroundColor: '#0e1118', textColor: '#d1d4dc' },
+                grid: { vertLines: { color: '#1c202e' }, horzLines: { color: '#1c202e' } },
+                rightPriceScale: { borderColor: '#232736' },
+                timeScale: { borderColor: '#232736', visible: true }
             });
 
-            // Synchronize chart timelines (pan/zoom)
-            upperChart.timeScale().subscribeVisibleTimeRangeChange(range => {
-                lowerChart.timeScale().setVisibleTimeRange(range);
-            });
-            lowerChart.timeScale().subscribeVisibleTimeRangeChange(range => {
-                upperChart.timeScale().setVisibleTimeRange(range);
-            });
+            // Sync Paning & Zooming across both Panes
+            upperChart.timeScale().subscribeVisibleTimeRangeChange(r => lowerChart.timeScale().setVisibleTimeRange(r));
+            lowerChart.timeScale().subscribeVisibleTimeRangeChange(r => upperChart.timeScale().setVisibleTimeRange(r));
 
-            // Primary Series
-            const candleSeries = upperChart.addCandlestickSeries({
+            const mainSeries = upperChart.addCandlestickSeries({
                 upColor: '#26a69a', downColor: '#ef5350',
-                borderVisible: false, wickUpColor: '#26a69a', wickDownColor: '#ef5350'
+                borderUpColor: '#26a69a', borderDownColor: '#ef5350',
+                wickUpColor: '#26a69a', wickDownColor: '#ef5350'
             });
 
             const volumeSeries = lowerChart.addHistogramSeries({
                 priceFormat: { type: 'volume' },
-                priceScaleId: '',
+                priceScaleId: ''
             });
 
-            // Store Tab Reference
             tabs[tabId] = {
                 symbol: targetSymbol,
+                chartStyle: 'candles',
                 upperChart, lowerChart,
-                candleSeries, volumeSeries,
+                mainSeries, volumeSeries,
+                lineSeries: null, rsiSeries: null,
                 data: [],
                 overlays: { sma: null, ema: null, bbUpper: null, bbLower: null },
-                lowerIndicator: 'volume', // 'volume' or 'rsi'
-                rsiSeries: null
+                lowerIndicator: 'volume'
             };
 
             switchTab(tabId);
             loadDataForTab(tabId, targetSymbol);
         }
 
-        // Switch Active Tab
         function switchTab(tabId) {
             activeTabId = tabId;
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -272,29 +257,25 @@
             document.getElementById(`header-${tabId}`).classList.add('active');
             document.getElementById(`content-${tabId}`).classList.add('active');
 
-            // Sync dropdown value with current tab symbol
             if (tabs[tabId] && tabs[tabId].symbol) {
                 document.getElementById('symbolSelect').value = tabs[tabId].symbol;
             }
 
-            // Trigger chart resize
             window.dispatchEvent(new Event('resize'));
         }
 
-        // Close Tab
         function closeTab(tabId, e) {
             e.stopPropagation();
-            if (Object.keys(tabs).length <= 1) return; // Keep at least one tab open
+            if (Object.keys(tabs).length <= 1) return;
 
             document.getElementById(`header-${tabId}`).remove();
             document.getElementById(`content-${tabId}`).remove();
             delete tabs[tabId];
 
-            const remainingTabIds = Object.keys(tabs);
-            switchTab(remainingTabIds[remainingTabIds.length - 1]);
+            const remaining = Object.keys(tabs);
+            switchTab(remaining[remaining.length - 1]);
         }
 
-        // Fetch OHLCV data from API and render
         async function loadDataForTab(tabId, symbol) {
             const tab = tabs[tabId];
             tab.symbol = symbol;
@@ -302,32 +283,53 @@
 
             try {
                 const res = await fetch(`${API_URL}/api/ohlcv/${symbol}`);
-                if (!res.ok) throw new Error("Data fetch error");
-                const rawData = await res.json();
+                if (!res.ok) throw new Error("Fetch failed");
+                const raw = await res.json();
 
-                tab.data = rawData.sort((a, b) => (a.time > b.time ? 1 : -1));
-                
-                // Set Candle Data
-                tab.candleSeries.setData(tab.data);
+                tab.data = raw.sort((a, b) => (a.time > b.time ? 1 : -1));
 
-                // Set Volume Data
-                const volumeData = tab.data.map(d => ({
+                if (tab.chartStyle === 'candles') {
+                    tab.mainSeries.setData(tab.data);
+                } else if (tab.lineSeries) {
+                    tab.lineSeries.setData(tab.data.map(d => ({ time: d.time, value: d.close })));
+                }
+
+                // Set Volume Data in Lower Pane
+                tab.volumeSeries.setData(tab.data.map(d => ({
                     time: d.time,
                     value: d.volume,
-                    color: d.close >= d.open ? 'rgba(38, 166, 154, 0.5)' : 'rgba(239, 83, 80, 0.5)'
-                }));
-                tab.volumeSeries.setData(volumeData);
+                    color: d.close >= d.open ? 'rgba(38, 166, 154, 0.6)' : 'rgba(239, 83, 80, 0.6)'
+                })));
 
-                // Re-apply active indicators
-                refreshIndicators(tabId);
-
+                refreshOverlays(tabId);
                 tab.upperChart.timeScale().fitContent();
-            } catch (err) {
-                console.error("Error loading tab data:", err);
+            } catch (e) {
+                console.error("Tab data error:", e);
             }
         }
 
-        // Toggle Overlays (SMA, EMA, BB)
+        function changeChartStyle(tabId, style) {
+            const tab = tabs[tabId];
+            tab.chartStyle = style;
+            if (style === 'line') {
+                tab.upperChart.removeSeries(tab.mainSeries);
+                tab.lineSeries = tab.upperChart.addLineSeries({ color: '#2962ff', lineWidth: 2 });
+                tab.lineSeries.setData(tab.data.map(d => ({ time: d.time, value: d.close })));
+            } else {
+                if (tab.lineSeries) {
+                    tab.upperChart.removeSeries(tab.lineSeries);
+                    tab.lineSeries = null;
+                }
+                tab.mainSeries = tab.upperChart.addCandlestickSeries({
+                    upColor: '#26a69a', downColor: '#ef5350',
+                    borderUpColor: '#26a69a', borderDownColor: '#ef5350',
+                    wickUpColor: '#26a69a', wickDownColor: '#ef5350'
+                });
+                tab.mainSeries.setData(tab.data);
+            }
+            refreshOverlays(tabId);
+        }
+
         function toggleOverlay(tabId, type) {
             const tab = tabs[tabId];
             const btn = document.querySelector(`#content-${tabId} .btn-${type}`);
@@ -338,9 +340,8 @@
                     tab.overlays.sma = null;
                     btn.classList.remove('btn-active');
                 } else {
-                    const smaData = calculateSMA(tab.data, 20);
                     tab.overlays.sma = tab.upperChart.addLineSeries({ color: '#2962ff', lineWidth: 2 });
-                    tab.overlays.sma.setData(smaData);
+                    tab.overlays.sma.setData(calculateSMA(tab.data, 20));
                     btn.classList.add('btn-active');
                 }
             } else if (type === 'ema') {
@@ -349,9 +350,8 @@
                     tab.overlays.ema = null;
                     btn.classList.remove('btn-active');
                 } else {
-                    const emaData = calculateEMA(tab.data, 50);
                     tab.overlays.ema = tab.upperChart.addLineSeries({ color: '#ff6d00', lineWidth: 2 });
-                    tab.overlays.ema.setData(emaData);
+                    tab.overlays.ema.setData(calculateEMA(tab.data, 50));
                     btn.classList.add('btn-active');
                 }
             } else if (type === 'bb') {
@@ -372,8 +372,7 @@
             }
         }
 
-        // Toggle Lower Pane Indicators (Volume vs RSI)
-        function toggleLowerIndicator(tabId, type) {
+        function setLowerIndicator(tabId, type) {
             const tab = tabs[tabId];
             const volBtn = document.querySelector(`#content-${tabId} .btn-vol`);
             const rsiBtn = document.querySelector(`#content-${tabId} .btn-rsi`);
@@ -390,38 +389,28 @@
                 tab.volumeSeries.applyOptions({ visible: false });
                 if (!tab.rsiSeries) {
                     tab.rsiSeries = tab.lowerChart.addLineSeries({ color: '#e91e63', lineWidth: 2 });
-                    const rsiData = calculateRSI(tab.data, 14);
-                    tab.rsiSeries.setData(rsiData);
+                    tab.rsiSeries.setData(calculateRSI(tab.data, 14));
                 }
                 rsiBtn.classList.add('btn-active');
                 volBtn.classList.remove('btn-active');
             }
         }
 
-        function refreshIndicators(tabId) {
+        function refreshOverlays(tabId) {
             const tab = tabs[tabId];
-            if (tab.overlays.sma) {
-                tab.overlays.sma.setData(calculateSMA(tab.data, 20));
-            }
-            if (tab.overlays.ema) {
-                tab.overlays.ema.setData(calculateEMA(tab.data, 50));
-            }
+            if (tab.overlays.sma) tab.overlays.sma.setData(calculateSMA(tab.data, 20));
+            if (tab.overlays.ema) tab.overlays.ema.setData(calculateEMA(tab.data, 50));
             if (tab.overlays.bbUpper) {
                 const bb = calculateBollingerBands(tab.data, 20, 2);
                 tab.overlays.bbUpper.setData(bb.upper);
                 tab.overlays.bbLower.setData(bb.lower);
             }
-            if (tab.rsiSeries) {
-                tab.rsiSeries.setData(calculateRSI(tab.data, 14));
-            }
+            if (tab.rsiSeries) tab.rsiSeries.setData(calculateRSI(tab.data, 14));
         }
 
-        // Window Event Listeners
         document.getElementById('loadBtn').addEventListener('click', () => {
             const sym = document.getElementById('symbolSelect').value;
-            if (sym && activeTabId) {
-                loadDataForTab(activeTabId, sym);
-            }
+            if (sym && activeTabId) loadDataForTab(activeTabId, sym);
         });
 
         document.getElementById('addTabBtn').addEventListener('click', () => {
@@ -432,16 +421,15 @@
         window.addEventListener('resize', () => {
             Object.keys(tabs).forEach(tabId => {
                 const tab = tabs[tabId];
-                const upperContainer = document.getElementById(`upper-${tabId}`);
-                const lowerContainer = document.getElementById(`lower-${tabId}`);
-                if (upperContainer && lowerContainer) {
-                    tab.upperChart.applyOptions({ width: upperContainer.clientWidth, height: upperContainer.clientHeight });
-                    tab.lowerChart.applyOptions({ width: lowerContainer.clientWidth, height: lowerContainer.clientHeight });
+                const upperEl = document.getElementById(`upper-${tabId}`);
+                const lowerEl = document.getElementById(`lower-${tabId}`);
+                if (upperEl && lowerEl) {
+                    tab.upperChart.applyOptions({ width: upperEl.clientWidth, height: upperEl.clientHeight });
+                    tab.lowerChart.applyOptions({ width: lowerEl.clientWidth, height: lowerEl.clientHeight });
                 }
             });
         });
 
-        // Initialize application
         fetchSymbols();
     </script>
 </body>
