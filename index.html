@@ -1,0 +1,278 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>AmiBroker Replica - Interactive Canvas</title>
+    <script src="https://unpkg.com/lightweight-charts@4.2.3/dist/lightweight-charts.standalone.production.js"></script>
+    <style>
+        :root {
+            --bg-color: #131722;
+            --panel-bg: #1e222d;
+            --text-color: #d1d4dc;
+            --accent-color: #2962ff;
+            --border-color: #2a2e39;
+        }
+
+        * {
+            box-sizing: border-box;
+            margin: 0;
+            padding: 0;
+        }
+
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen, Ubuntu, sans-serif;
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+        }
+
+        header {
+            background-color: var(--panel-bg);
+            border-bottom: 1px solid var(--border-color);
+            padding: 10px 15px;
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            z-index: 10;
+        }
+
+        h1 {
+            font-size: 1rem;
+            font-weight: 600;
+            color: #ffffff;
+            white-space: nowrap;
+        }
+
+        .controls {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex: 1;
+        }
+
+        select, button {
+            background-color: var(--bg-color);
+            color: var(--text-color);
+            border: 1px solid var(--border-color);
+            border-radius: 4px;
+            padding: 6px 10px;
+            font-size: 0.85rem;
+            outline: none;
+        }
+
+        select {
+            min-width: 130px;
+            max-width: 200px;
+        }
+
+        select:focus, button:hover {
+            border-color: var(--accent-color);
+            cursor: pointer;
+        }
+
+        button {
+            background-color: var(--accent-color);
+            color: white;
+            border: none;
+            font-weight: 500;
+            white-space: nowrap;
+        }
+
+        #chart-container {
+            flex: 1;
+            width: 100%;
+            height: calc(100vh - 55px);
+            position: relative;
+        }
+
+        .status-badge {
+            font-size: 0.75rem;
+            padding: 3px 8px;
+            border-radius: 12px;
+            background-color: #2a2e39;
+            white-space: nowrap;
+        }
+
+        .status-online { color: #089981; }
+        .status-loading { color: #f5c518; }
+        .status-error { color: #f23645; }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>AmiBroker</h1>
+        <div class="controls">
+            <select id="symbolSelect">
+                <option value="">Fetching ticker list...</option>
+            </select>
+            <button onclick="loadChartData()">Load</button>
+        </div>
+        <div id="statusBadge" class="status-badge status-loading">Loading</div>
+    </header>
+
+    <div id="chart-container"></div>
+
+    <script>
+        // Automatic API targeting: relative when served via FastAPI backend root, fallback to Render URL
+        const API_BASE_URL = window.location.origin.includes('onrender.com') || window.location.origin.includes('localhost') || window.location.origin.includes('127.0.0.1')
+            ? window.location.origin
+            : 'https://nse-data-engine.onrender.com';
+
+        let chart;
+        let candlestickSeries;
+        let volumeSeries;
+
+        function initChart() {
+            const container = document.getElementById('chart-container');
+            
+            chart = LightweightCharts.createChart(container, {
+                width: container.clientWidth,
+                height: container.clientHeight,
+                layout: {
+                    background: { type: 'solid', color: '#131722' },
+                    textColor: '#d1d4dc',
+                },
+                grid: {
+                    vertLines: { color: '#1f2434' },
+                    horzLines: { color: '#1f2434' },
+                },
+                crosshair: {
+                    mode: LightweightCharts.CrosshairMode.Normal,
+                },
+                rightPriceScale: {
+                    borderColor: '#2a2e39',
+                },
+                timeScale: {
+                    borderColor: '#2a2e39',
+                    timeVisible: true,
+                },
+            });
+
+            candlestickSeries = chart.addCandlestickSeries({
+                upColor: '#089981',
+                downColor: '#f23645',
+                borderVisible: false,
+                wickUpColor: '#089981',
+                wickDownColor: '#f23645',
+            });
+
+            volumeSeries = chart.addHistogramSeries({
+                color: '#26a69a',
+                priceFormat: { type: 'volume' },
+                priceScaleId: '',
+                scaleMargins: {
+                    top: 0.8,
+                    bottom: 0,
+                },
+            });
+
+            window.addEventListener('resize', () => {
+                chart.applyOptions({
+                    width: container.clientWidth,
+                    height: container.clientHeight
+                });
+            });
+        }
+
+        async function fetchSymbols() {
+            const statusBadge = document.getElementById('statusBadge');
+            const select = document.getElementById('symbolSelect');
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/symbols`);
+                if (!response.ok) throw new Error("Failed to load symbols");
+                
+                const symbols = await response.json();
+                select.innerHTML = '';
+
+                if (symbols.length === 0) {
+                    select.innerHTML = '<option value="">No symbols found</option>';
+                    statusBadge.innerText = 'No DB Data';
+                    statusBadge.className = 'status-badge status-error';
+                    return;
+                }
+
+                symbols.forEach(sym => {
+                    const opt = document.createElement('option');
+                    opt.value = sym;
+                    opt.textContent = sym;
+                    select.appendChild(opt);
+                });
+
+                if (symbols.includes('RELIANCE')) {
+                    select.value = 'RELIANCE';
+                }
+
+                statusBadge.innerText = 'Connected';
+                statusBadge.className = 'status-badge status-online';
+
+                loadChartData();
+
+            } catch (err) {
+                console.error(err);
+                statusBadge.innerText = 'API Offline';
+                statusBadge.className = 'status-badge status-error';
+            }
+        }
+
+        async function loadChartData() {
+            const symbol = document.getElementById('symbolSelect').value;
+            const statusBadge = document.getElementById('statusBadge');
+            
+            if (!symbol) return;
+
+            statusBadge.innerText = `Fetching ${symbol}...`;
+            statusBadge.className = 'status-badge status-loading';
+
+            try {
+                const response = await fetch(`${API_BASE_URL}/api/ohlcv/${encodeURIComponent(symbol)}`);
+                if (!response.ok) throw new Error(`HTTP error ${response.status}`);
+                
+                const rawData = await response.json();
+
+                const candleData = [];
+                const volumeData = [];
+
+                rawData.forEach(bar => {
+                    candleData.push({
+                        time: bar.time,
+                        open: bar.open,
+                        high: bar.high,
+                        low: bar.low,
+                        close: bar.close
+                    });
+
+                    const isUp = bar.close >= bar.open;
+                    volumeData.push({
+                        time: bar.time,
+                        value: bar.volume,
+                        color: isUp ? 'rgba(8, 153, 129, 0.5)' : 'rgba(242, 54, 69, 0.5)'
+                    });
+                });
+
+                candlestickSeries.setData(candleData);
+                volumeSeries.setData(volumeData);
+                chart.timeScale().fitContent();
+
+                statusBadge.innerText = `${symbol} (${rawData.length} bars)`;
+                statusBadge.className = 'status-badge status-online';
+
+            } catch (err) {
+                console.error(err);
+                statusBadge.innerText = `Error loading ${symbol}`;
+                statusBadge.className = 'status-badge status-error';
+            }
+        }
+
+        window.addEventListener('DOMContentLoaded', () => {
+            initChart();
+            fetchSymbols();
+        });
+    </script>
+</body>
+</html>

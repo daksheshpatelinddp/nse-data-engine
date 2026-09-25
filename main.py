@@ -1,16 +1,14 @@
 import sqlite3
+import glob
+import os
 from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
-from typing import List, Optional
-import os
+from fastapi.responses import FileResponse
+from typing import List, Dict, Any
 
-app = FastAPI(
-    title="AmiBroker Replica EOD API Engine",
-    description="High-performance SQLite data engine for Flutter charting canvas",
-    version="1.0.0"
-)
+app = FastAPI(title="AmiBroker Data Engine API", version="2.0")
 
-# Enable CORS for Flutter web/mobile requests
+# Enable CORS for browser access
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -19,80 +17,106 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-DB_PATH = os.getenv("DB_PATH", "nse_eod_data.db")
+def get_db_files() -> List[str]:
+    """Scans and returns all available yearly stock database files."""
+    db_files = sorted(glob.glob("nse_*.db"))
+    if not db_files and os.path.exists("nse_data.db"):
+        db_files = ["nse_data.db"]
+    return db_files
 
-def get_db_connection():
-    if not os.path.exists(DB_PATH):
-        raise HTTPException(status_code=500, detail=f"Database file '{DB_PATH}' not found.")
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
+@app.get("/api/symbols")
+def get_symbols() -> List[str]:
+    """Retrieves all distinct ticker symbols across available databases."""
+    symbols = set()
+    db_files = get_db_files()
+    
+    if not db_files:
+        return []
 
-@app.get("/health")
-def health_check():
-    return {"status": "online", "database": DB_PATH}
+    for db_path in db_files:
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            cursor.execute("SELECT DISTINCT Ticker FROM stock_prices")
+            rows = cursor.fetchall()
+            for row in rows:
+                if row[0]:
+                    symbols.add(row[0].strip().upper())
+            conn.close()
+        except Exception:
+            continue
+            
+    return sorted(list(symbols))
 
-@app.get("/api/v1/symbols")
-def get_symbols():
-    """Fetch list of all available stock/index tickers."""
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        cursor.execute("SELECT DISTINCT symbol FROM ohlcv ORDER BY symbol ASC")
-        rows = cursor.fetchall()
-        symbols = [row["symbol"] for row in rows]
-        return {"count": len(symbols), "symbols": symbols}
-    finally:
-        conn.close()
-
-@app.get("/api/v1/chart/ohlcv")
+@app.get("/api/ohlcv/{symbol}")
 def get_ohlcv(
-    symbol: str = Query(..., description="Stock symbol, e.g., RELIANCE"),
-    start_date: Optional[str] = Query(None, description="Format: YYYY-MM-DD"),
-    end_date: Optional[str] = Query(None, description="Format: YYYY-MM-DD")
-):
-    """
-    Returns time-series OHLCV array optimized for mobile chart rendering.
-    """
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    try:
-        query = "SELECT date, open, high, low, close, volume FROM ohlcv WHERE symbol = ?"
-        params = [symbol]
+    symbol: str, 
+    start_date: str = Query(None, description="Format: YYYY-MM-DD"), 
+    end_date: str = Query(None, description="Format: YYYY-MM-DD")
+) -> List[Dict[str, Any]]:
+    """Fetches combined OHLCV records for a given stock symbol in chronological order."""
+    clean_symbol = symbol.strip().upper()
+    all_data = []
+    db_files = get_db_files()
 
-        if start_date:
-            query += " AND date >= ?"
-            params.append(start_date)
-        if end_date:
-            query += " AND date <= ?"
-            params.append(end_date)
+    if not db_files:
+        raise HTTPException(status_code=404, detail="No database files found on server.")
 
-        query += " ORDER BY date ASC"
-        cursor.execute(query, params)
-        rows = cursor.fetchall()
+    for db_path in db_files:
+        try:
+            conn = sqlite3.connect(db_path)
+            cursor = conn.cursor()
+            
+            query = """
+                SELECT Date, Open, High, Low, Close, Volume 
+                FROM stock_prices 
+                WHERE Ticker = ?
+            """
+            params = [clean_symbol]
 
-        if not rows:
-            raise HTTPException(status_code=404, detail=f"No data found for symbol: {symbol}")
+            if start_date:
+                query += " AND Date >= ?"
+                params.append(start_date)
+            if end_date:
+                query += " AND Date <= ?"
+                params.append(end_date)
 
-        # Returns array formatted for high-performance memory consumption in Flutter
-        dates, opens, highs, lows, closes, volumes = [], [], [], [], [], []
-        for r in rows:
-            dates.append(r["date"])
-            opens.append(float(r["open"]))
-            highs.append(float(r["high"]))
-            lows.append(float(r["low"]))
-            closes.append(float(r["close"]))
-            volumes.append(int(r["volume"]))
+            query += " ORDER BY Date ASC"
 
-        return {
-            "symbol": symbol,
-            "total_bars": len(dates),
-            "dates": dates,
-            "open": opens,
-            "high": highs,
-            "low": lows,
-            "close": closes,
-            "volume": volumes
-        }
-    finally:
-        conn.close()
+            cursor.execute(query, params)
+            rows = cursor.fetchall()
+
+            for r in rows:
+                raw_date = str(r[0]).replace("-", "")
+                if len(raw_date) == 8:
+                    formatted_date = f"{raw_date[:4]}-{raw_date[4:6]}-{raw_date[6:]}"
+                else:
+                    formatted_date = str(r[0])
+
+                all_data.append({
+                    "time": formatted_date,
+                    "open": float(r[1]),
+                    "high": float(r[2]),
+                    "low": float(r[3]),
+                    "close": float(r[4]),
+                    "volume": float(r[5]) if r[5] is not None else 0.0
+                })
+            conn.close()
+        except Exception:
+            continue
+
+    if not all_data:
+        raise HTTPException(status_code=404, detail=f"No price records found for ticker '{clean_symbol}'.")
+
+    # Deduplicate dates across database overlaps and sort
+    unique_data = {item['time']: item for item in all_data}
+    sorted_records = [unique_data[k] for k in sorted(unique_data.keys())]
+
+    return sorted_records
+
+@app.get("/")
+def serve_index():
+    """Serves the interactive charting app index.html from root."""
+    if os.path.exists("index.html"):
+        return FileResponse("index.html")
+    return {"status": "AmiBroker Data Engine API is Live. Visit /docs for swagger docs."}
