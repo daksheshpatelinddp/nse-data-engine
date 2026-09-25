@@ -99,9 +99,15 @@ jobs:
     - name: Commit and Push Updated Databases
       run: |
         git config --global user.name "GitHub Actions Bot"
-        git config --global user.email "actions@github.com"
+        git config --global user.email "actions@github.com
+           
+          # Remove LFS tracking manually for database files
+          git rm --cached nse_*.db || true
+          
         git add nse_*.db
         git commit -m "Automated update: Yearly NSE Databases" || exit 0
         git stash --include-untracked
         git pull --rebase origin main
         git push origin main
+        
+        
