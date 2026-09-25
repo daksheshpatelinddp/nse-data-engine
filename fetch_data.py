@@ -25,7 +25,6 @@ HEADERS = {
     "Referer": "https://www.nseindia.com"
 }
 
-# Cache for active yearly database connections
 db_connections = {}
 
 def get_db_connection(year_str):
@@ -213,41 +212,69 @@ def get_price_on_or_before(symbol, target_date_str, field="close"):
     return None
 
 
-def get_price_on_date(symbol, date_str, field="open"):
-    """Retrieves exact field price for a symbol on a given date."""
-    year_str = date_str[:4]
-    db_file = f"nse_{year_str}.db"
-    if not os.path.exists(db_file):
-        return None
-        
-    conn = get_db_connection(year_str)
-    cursor = conn.cursor()
-    cursor.execute(f'''
-        SELECT {field} FROM ohlcv 
-        WHERE symbol = ? AND date = ? AND is_index = 0
-    ''', (symbol, date_str))
-    row = cursor.fetchone()
-    if row and row[0] is not None and row[0] > 0:
-        return float(row[0])
-        
+def get_price_on_or_after(symbol, target_date_str, field="open"):
+    """Queries across all yearly DBs to find the earliest recorded price on or after target_date_str."""
+    db_files = sorted([f for f in os.listdir(".") if f.startswith("nse_") and f.endswith(".db")])
+    
+    for db_file in db_files:
+        year_str = db_file.replace("nse_", "").replace(".db", "")
+        if year_str < target_date_str[:4]:
+            continue
+            
+        conn = get_db_connection(year_str)
+        cursor = conn.cursor()
+        cursor.execute(f'''
+            SELECT {field} FROM ohlcv 
+            WHERE symbol = ? AND date >= ? AND is_index = 0
+            ORDER BY date ASC LIMIT 1
+        ''', (symbol, target_date_str))
+        row = cursor.fetchone()
+        if row and row[0] is not None and row[0] > 0:
+            return float(row[0])
+            
     return None
+
+
+def action_already_applied(symbol, ex_date, action_type):
+    """Checks if corporate action has already been recorded in corporate_actions table."""
+    db_files = [f for f in os.listdir(".") if f.startswith("nse_") and f.endswith(".db")]
+    for db_file in db_files:
+        conn = sqlite3.connect(db_file)
+        cursor = conn.cursor()
+        cursor.execute('''
+            SELECT COUNT(*) FROM corporate_actions 
+            WHERE symbol = ? AND ex_date = ? AND action_type = ?
+        ''', (symbol, ex_date, action_type))
+        count = cursor.fetchone()[0]
+        conn.close()
+        if count > 0:
+            return True
+    return False
 
 
 def calculate_demerger_factor(symbol, ex_date):
     """Calculates AF = (Ex-Date Open) / (Cum-Date Close)."""
-    ex_open = get_price_on_date(symbol, ex_date, field="open")
-    
-    # Calculate previous trading day date string
+    if action_already_applied(symbol, ex_date, "DEMERGER"):
+        return None
+
     dt_ex = datetime.strptime(ex_date, "%Y-%m-%d")
     dt_prev = (dt_ex - timedelta(days=1)).strftime("%Y-%m-%d")
     
-    # Fetch last available closing price on or prior to the day before ex_date
+    # 1. Fetch Cum-Date Close (last close on or prior to day before ex-date)
     cum_close = get_price_on_or_before(symbol, dt_prev, field="close")
+    
+    # 2. Fetch Ex-Date Open (first open on or after ex-date)
+    ex_open = get_price_on_or_after(symbol, ex_date, field="open")
     
     if ex_open and cum_close and cum_close > 0:
         factor = ex_open / cum_close
         if 0.0 < factor < 1.0:
+            print(f"[DEMERGER FORMULA] {symbol} @ {ex_date}: Ex-Open({ex_open}) / Cum-Close({cum_close}) = {factor:.4f}")
             return factor
+        else:
+            print(f"[DEMERGER SKIP] {symbol} @ {ex_date}: Calculated factor {factor:.4f} outside valid range (0, 1)")
+    else:
+        print(f"[DEMERGER MISSING DATA] {symbol} @ {ex_date}: Cum-Close={cum_close}, Ex-Open={ex_open}")
             
     return None
 
@@ -290,13 +317,12 @@ def parse_purpose_multipliers(purpose_str, row_dict, symbol, ex_date):
         if factor and 0.0 < factor < 1.0:
             factors.append(("SPLIT", factor))
 
-    # 2. DEMERGER (Automated Formula: Ex-Date Open / Cum-Date Close)
+    # 2. DEMERGER
     if "demerger" in p_lower or "de-merger" in p_lower or "demerg" in p_lower:
         factor = calculate_demerger_factor(symbol, ex_date)
         if factor:
             factors.append(("DEMERGER", factor))
         else:
-            # Fallback to regex percentage parser if market prices are unavailable
             pct_match = re.search(r"(\d+(?:\.\d+)?)\s*%", p_lower)
             if pct_match:
                 pct = float(pct_match.group(1))
