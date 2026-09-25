@@ -201,11 +201,24 @@ def fetch_nse_bhavcopy_range(start_date=START_DATE):
 
 def get_price_on_or_before(symbol, target_date_str, field="close"):
     """Queries all existing database files for the latest available price on or before target_date_str."""
-    db_files = sorted([f for f in os.listdir(".") if f.startswith("nse_") and f.endswith(".db")], reverse=True)
-    
+    target_year = target_date_str[:4]
+
+    def sort_key(f):
+        y = f.replace("nse_", "").replace(".db", "")
+        # Non-numeric filenames (e.g. nse_eod_data.db) get pushed to the end of the
+        # "reverse" sort so they're still checked, just after the dated files.
+        return y if y.isdigit() else "0000"
+
+    db_files = sorted(
+        [f for f in os.listdir(".") if f.startswith("nse_") and f.endswith(".db")],
+        key=sort_key, reverse=True
+    )
+
     for db_file in db_files:
         year_str = db_file.replace("nse_", "").replace(".db", "")
-        if year_str > target_date_str[:4]:
+        # Only skip based on year if it's actually a 4-digit year we can compare.
+        # A file like nse_eod_data.db must never be silently skipped.
+        if year_str.isdigit() and year_str > target_year:
             continue
             
         try:
@@ -228,11 +241,24 @@ def get_price_on_or_before(symbol, target_date_str, field="close"):
 
 def get_price_on_or_after(symbol, target_date_str, field="open"):
     """Queries all existing database files for the earliest available price on or after target_date_str."""
-    db_files = sorted([f for f in os.listdir(".") if f.startswith("nse_") and f.endswith(".db")])
-    
+    target_year = target_date_str[:4]
+
+    def sort_key(f):
+        y = f.replace("nse_", "").replace(".db", "")
+        # Non-numeric filenames (e.g. nse_eod_data.db) get pushed to the front so
+        # they're checked first when the target date predates any yearly db file.
+        return y if y.isdigit() else "0000"
+
+    db_files = sorted(
+        [f for f in os.listdir(".") if f.startswith("nse_") and f.endswith(".db")],
+        key=sort_key
+    )
+
     for db_file in db_files:
         year_str = db_file.replace("nse_", "").replace(".db", "")
-        if year_str < target_date_str[:4]:
+        # Only skip based on year if it's actually a 4-digit year we can compare.
+        # A file like nse_eod_data.db must never be silently skipped.
+        if year_str.isdigit() and year_str < target_year:
             continue
             
         try:
