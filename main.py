@@ -8,7 +8,7 @@ from typing import List, Dict, Any
 
 app = FastAPI(title="AmiBroker Data Engine API", version="2.0")
 
-# Enable CORS for browser access
+# Enable CORS for web/mobile browsers
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -18,15 +18,25 @@ app.add_middleware(
 )
 
 def get_db_files() -> List[str]:
-    """Scans and returns all available yearly stock database files."""
+    """Finds all yearly database files (e.g. nse_2023.db, nse_2024.db, etc.)."""
     db_files = sorted(glob.glob("nse_*.db"))
     if not db_files and os.path.exists("nse_data.db"):
         db_files = ["nse_data.db"]
     return db_files
 
+def get_table_name(cursor) -> str:
+    """Detects whether the table is named 'ohlcv' or 'stock_prices'."""
+    cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+    tables = [row[0] for row in cursor.fetchall()]
+    if "ohlcv" in tables:
+        return "ohlcv"
+    elif "stock_prices" in tables:
+        return "stock_prices"
+    return tables[0] if tables else "ohlcv"
+
 @app.get("/api/symbols")
 def get_symbols() -> List[str]:
-    """Retrieves all distinct ticker symbols across available databases."""
+    """Retrieves all distinct stock symbols across available databases."""
     symbols = set()
     db_files = get_db_files()
     
@@ -37,11 +47,18 @@ def get_symbols() -> List[str]:
         try:
             conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
-            cursor.execute("SELECT DISTINCT Ticker FROM stock_prices")
+            table = get_table_name(cursor)
+            
+            # Check for column name (symbol vs ticker)
+            cursor.execute(f"PRAGMA table_info({table})")
+            cols = [col[1].lower() for col in cursor.fetchall()]
+            sym_col = "symbol" if "symbol" in cols else "ticker"
+
+            cursor.execute(f"SELECT DISTINCT {sym_col} FROM {table}")
             rows = cursor.fetchall()
             for row in rows:
                 if row[0]:
-                    symbols.add(row[0].strip().upper())
+                    symbols.add(str(row[0]).strip().upper())
             conn.close()
         except Exception:
             continue
@@ -60,28 +77,33 @@ def get_ohlcv(
     db_files = get_db_files()
 
     if not db_files:
-        raise HTTPException(status_code=404, detail="No database files found on server.")
+        raise HTTPException(status_code=404, detail="No database files found on backend.")
 
     for db_path in db_files:
         try:
             conn = sqlite3.connect(db_path)
             cursor = conn.cursor()
-            
-            query = """
-                SELECT Date, Open, High, Low, Close, Volume 
-                FROM stock_prices 
-                WHERE Ticker = ?
+            table = get_table_name(cursor)
+
+            cursor.execute(f"PRAGMA table_info({table})")
+            cols = [col[1].lower() for col in cursor.fetchall()]
+            sym_col = "symbol" if "symbol" in cols else "ticker"
+
+            query = f"""
+                SELECT date, open, high, low, close, volume 
+                FROM {table} 
+                WHERE upper({sym_col}) = ?
             """
             params = [clean_symbol]
 
             if start_date:
-                query += " AND Date >= ?"
+                query += " AND date >= ?"
                 params.append(start_date)
             if end_date:
-                query += " AND Date <= ?"
+                query += " AND date <= ?"
                 params.append(end_date)
 
-            query += " ORDER BY Date ASC"
+            query += " ORDER BY date ASC"
 
             cursor.execute(query, params)
             rows = cursor.fetchall()
@@ -106,9 +128,8 @@ def get_ohlcv(
             continue
 
     if not all_data:
-        raise HTTPException(status_code=404, detail=f"No price records found for ticker '{clean_symbol}'.")
+        raise HTTPException(status_code=404, detail=f"No stock price data found for '{clean_symbol}'.")
 
-    # Deduplicate dates across database overlaps and sort
     unique_data = {item['time']: item for item in all_data}
     sorted_records = [unique_data[k] for k in sorted(unique_data.keys())]
 
@@ -116,7 +137,6 @@ def get_ohlcv(
 
 @app.get("/")
 def serve_index():
-    """Serves the interactive charting app index.html from root."""
     if os.path.exists("index.html"):
         return FileResponse("index.html")
-    return {"status": "AmiBroker Data Engine API is Live. Visit /docs for swagger docs."}
+    return {"status": "AmiBroker Data Engine API is Live."}
