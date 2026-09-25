@@ -290,15 +290,20 @@ def get_price_on_or_before(symbol, target_date_str, field="close"):
         try:
             conn = sqlite3.connect(db_file)
             cursor = conn.cursor()
+            # Pull several recent candidates, not just the single nearest date - a
+            # stock can be listed with a zero-price/zero-volume row on a given day
+            # (illiquid day, or a trading halt right around a corporate action) even
+            # while genuinely trading normally a few days earlier.
             cursor.execute(f'''
                 SELECT {field} FROM ohlcv 
                 WHERE symbol = ? COLLATE NOCASE AND date <= ? AND is_index = 0
-                ORDER BY date DESC LIMIT 1
+                ORDER BY date DESC LIMIT 20
             ''', (symbol, target_date_str))
-            row = cursor.fetchone()
+            rows = cursor.fetchall()
             conn.close()
-            if row and row[0] is not None and row[0] > 0:
-                return float(row[0])
+            for row in rows:
+                if row and row[0] is not None and row[0] > 0:
+                    return float(row[0])
         except Exception:
             continue
             
@@ -330,15 +335,19 @@ def get_price_on_or_after(symbol, target_date_str, field="open"):
         try:
             conn = sqlite3.connect(db_file)
             cursor = conn.cursor()
+            # Same fix as get_price_on_or_before: check several upcoming candidates
+            # instead of only the single nearest date, since the immediate next day
+            # can itself be a zero-price/zero-volume (no-trade) row.
             cursor.execute(f'''
                 SELECT {field} FROM ohlcv 
                 WHERE symbol = ? COLLATE NOCASE AND date >= ? AND is_index = 0
-                ORDER BY date ASC LIMIT 1
+                ORDER BY date ASC LIMIT 20
             ''', (symbol, target_date_str))
-            row = cursor.fetchone()
+            rows = cursor.fetchall()
             conn.close()
-            if row and row[0] is not None and row[0] > 0:
-                return float(row[0])
+            for row in rows:
+                if row and row[0] is not None and row[0] > 0:
+                    return float(row[0])
         except Exception:
             continue
             
@@ -399,7 +408,11 @@ def debug_symbol_presence(symbol, ex_date, days=15):
 
     if found_rows:
         sample = ", ".join(f"{r[0]} sym='{r[1]}' O={r[2]} C={r[3]}" for r in found_rows[:5])
-        print(f"[DEBUG] Found {len(found_rows)}+ nearby row(s) for '{symbol}' via LIKE match: {sample}")
+        all_zero = all((r[2] in (0, 0.0, None)) and (r[3] in (0, 0.0, None)) for r in found_rows)
+        note = (" -- ALL sampled rows have 0 price (no real trade that day); "
+                "get_price_on_or_before/after now walk further out to find a real traded price."
+                if all_zero else "")
+        print(f"[DEBUG] Found {len(found_rows)}+ nearby row(s) for '{symbol}' via LIKE match: {sample}{note}")
     else:
         print(f"[DEBUG] No row for '{symbol}' (any casing/spacing) found in {window_start}..{window_end} "
               f"across {len(db_files)} db file(s). Likely trading was suspended that day, "
