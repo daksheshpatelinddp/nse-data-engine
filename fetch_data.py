@@ -108,8 +108,12 @@ def generate_date_range(start_date_str):
     return date_list
 
 
+# ==========================================
+# PHASE 1: DOWNLOAD AND STORE BASE DATA
+# ==========================================
+
 def fetch_nse_bhavcopy_range(start_date=START_DATE):
-    """Downloads daily Bhavcopies and saves them into respective yearly database files."""
+    """Downloads daily Bhavcopies and stores all raw OHLCV data into DB files first."""
     session = requests.Session()
     session.headers.update(HEADERS)
 
@@ -121,7 +125,7 @@ def fetch_nse_bhavcopy_range(start_date=START_DATE):
     date_list = generate_date_range(start_date)
     total_added = 0
 
-    print(f"[START] Fetching Bhavcopies from {start_date} to present into yearly databases...")
+    print(f"[PHASE 1 START] Downloading and storing Bhavcopies from {start_date} to present...")
 
     for date_str in date_list:
         year_str = date_str[:4]
@@ -181,16 +185,22 @@ def fetch_nse_bhavcopy_range(start_date=START_DATE):
 
                     conn.commit()
                     total_added += len(records)
-                    print(f"[SUCCESS] Downloaded {date_str} -> nse_{year_str}.db ({len(records)} records)")
+                    print(f"[STORED] Downloaded {date_str} -> nse_{year_str}.db ({len(records)} records)")
                     break
             except Exception:
                 continue
 
-    print(f"[COMPLETE] EOD fetch finished. Added {total_added} records.")
+    # Commit and flush DB connections so all tables are fully readable
+    close_all_databases()
+    print(f"[PHASE 1 COMPLETE] All raw data saved to database files. Added {total_added} new records.")
 
+
+# ==========================================
+# PHASE 2: READ STORED DATA & APPLY ADJUSTMENTS
+# ==========================================
 
 def get_price_on_or_before(symbol, target_date_str, field="close"):
-    """Queries across all yearly DBs to find the latest recorded price on or before target_date_str."""
+    """Queries all database files to find latest available price on or before target_date_str."""
     db_files = sorted([f for f in os.listdir(".") if f.startswith("nse_") and f.endswith(".db")], reverse=True)
     
     for db_file in db_files:
@@ -213,7 +223,7 @@ def get_price_on_or_before(symbol, target_date_str, field="close"):
 
 
 def get_price_on_or_after(symbol, target_date_str, field="open"):
-    """Queries across all yearly DBs to find the earliest recorded price on or after target_date_str."""
+    """Queries all database files to find earliest available price on or after target_date_str."""
     db_files = sorted([f for f in os.listdir(".") if f.startswith("nse_") and f.endswith(".db")])
     
     for db_file in db_files:
@@ -236,7 +246,7 @@ def get_price_on_or_after(symbol, target_date_str, field="open"):
 
 
 def action_already_applied(symbol, ex_date, action_type):
-    """Checks if corporate action has already been recorded in corporate_actions table."""
+    """Checks if corporate action was already processed."""
     db_files = [f for f in os.listdir(".") if f.startswith("nse_") and f.endswith(".db")]
     for db_file in db_files:
         conn = sqlite3.connect(db_file)
@@ -253,17 +263,17 @@ def action_already_applied(symbol, ex_date, action_type):
 
 
 def calculate_demerger_factor(symbol, ex_date):
-    """Calculates AF = (Ex-Date Open) / (Cum-Date Close)."""
+    """Calculates Adjustment Factor: AF = (Ex-Date Open) / (Cum-Date Close)."""
     if action_already_applied(symbol, ex_date, "DEMERGER"):
         return None
 
     dt_ex = datetime.strptime(ex_date, "%Y-%m-%d")
     dt_prev = (dt_ex - timedelta(days=1)).strftime("%Y-%m-%d")
     
-    # 1. Fetch Cum-Date Close (last close on or prior to day before ex-date)
+    # 1. Fetch Cum-Date Close from stored database
     cum_close = get_price_on_or_before(symbol, dt_prev, field="close")
     
-    # 2. Fetch Ex-Date Open (first open on or after ex-date)
+    # 2. Fetch Ex-Date Open from stored database
     ex_open = get_price_on_or_after(symbol, ex_date, field="open")
     
     if ex_open and cum_close and cum_close > 0:
@@ -272,7 +282,7 @@ def calculate_demerger_factor(symbol, ex_date):
             print(f"[DEMERGER FORMULA] {symbol} @ {ex_date}: Ex-Open({ex_open}) / Cum-Close({cum_close}) = {factor:.4f}")
             return factor
         else:
-            print(f"[DEMERGER SKIP] {symbol} @ {ex_date}: Calculated factor {factor:.4f} outside valid range (0, 1)")
+            print(f"[DEMERGER SKIP] {symbol} @ {ex_date}: Factor {factor:.4f} outside range (0, 1)")
     else:
         print(f"[DEMERGER MISSING DATA] {symbol} @ {ex_date}: Cum-Close={cum_close}, Ex-Open={ex_open}")
             
@@ -280,7 +290,7 @@ def calculate_demerger_factor(symbol, ex_date):
 
 
 def extract_split_ratio(purpose_str, row_dict):
-    """Reliably extracts stock split factors from NSE split.csv exports."""
+    """Extracts stock split factors from split purpose descriptions."""
     p_lower = str(purpose_str).lower().strip()
 
     m = re.search(r"(?:rs|re|\.|\s)*(\d+(?:\.\d+)?)\s*(?:/-)?\s*to\s*(?:rs|re|\.|\s)*(\d+(?:\.\d+)?)", p_lower)
@@ -307,7 +317,7 @@ def extract_split_ratio(purpose_str, row_dict):
 
 
 def parse_purpose_multipliers(purpose_str, row_dict, symbol, ex_date):
-    """Processes corporate action types (Splits, Demergers, Bonuses, Rights)."""
+    """Parses corporate action events and returns adjustment factors."""
     factors = []
     p_lower = str(purpose_str).lower()
 
@@ -349,7 +359,7 @@ def parse_purpose_multipliers(purpose_str, row_dict, symbol, ex_date):
 
 
 def apply_factor_across_all_dbs(symbol, ex_date, factor, purpose, action_type):
-    """Applies adjustments across all existing nse_YYYY.db files for prices prior to ex_date."""
+    """Applies multiplier adjustments to pre-ex_date historical records in database files."""
     db_files = [f for f in os.listdir(".") if f.startswith("nse_") and f.endswith(".db")]
     
     for db_file in db_files:
@@ -375,6 +385,8 @@ def apply_factor_across_all_dbs(symbol, ex_date, factor, purpose, action_type):
 
 
 def process_all_corporate_actions():
+    """Phase 2 execution: Reads populated tables, calculates factors, and updates database."""
+    print("[PHASE 2 START] Reading stored database records and processing corporate action files...")
     applied_count = 0
 
     for file_path in CA_FILES:
@@ -406,12 +418,12 @@ def process_all_corporate_actions():
                     if 0.0 < factor < 1.0:
                         apply_factor_across_all_dbs(symbol, ex_date, factor, purpose, action_type)
                         applied_count += 1
-                        print(f"[{action_type}] Adjusted {symbol} prior to {ex_date} with factor {factor:.4f} ({purpose})")
+                        print(f"[{action_type}] Adjusted {symbol} prior to {ex_date} with factor {factor:.4f}")
 
         except Exception as e:
             print(f"[ERROR] Failed to process {file_path}: {e}")
 
-    print(f"[SUCCESS] Corporate action batch processing complete ({applied_count} actions applied).")
+    print(f"[PHASE 2 COMPLETE] Corporate action batch processing finished ({applied_count} actions applied).")
 
 
 def apply_manual_overrides():
@@ -439,9 +451,14 @@ def apply_manual_overrides():
 
 
 def main():
+    # Phase 1: Download & store raw daily market data
     fetch_nse_bhavcopy_range(start_date=START_DATE)
+
+    # Phase 2: Read stored data, compute dynamic demerger ratios & apply adjustments
     process_all_corporate_actions()
     apply_manual_overrides()
+
+    # Final cleanup
     close_all_databases()
 
 
