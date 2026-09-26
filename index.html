@@ -116,7 +116,7 @@
                 const query = `
                     SELECT DISTINCT Symbol 
                     FROM read_parquet([${PARQUET_FILES.map(f => `'${f}'`).join(',')}]) 
-                    WHERE Symbol IS NOT NULL
+                    WHERE Symbol IS NOT NULL AND TRIM(Symbol) <> ''
                     ORDER BY Symbol ASC
                 `;
                 
@@ -384,8 +384,17 @@
 
                 refreshOverlays(tabId);
                 tab.upperChart.timeScale().fitContent();
+
+                if (tab.data.length === 0) {
+                    const detail = document.getElementById('errorDetail');
+                    detail.style.display = 'block';
+                    detail.textContent = `NO DATA for symbol "${symbol}". Query ran successfully but returned 0 rows - check that the Symbol value matches exactly what's stored in the parquet files (case, spacing, suffix like .NS/.NSE).`;
+                }
             } catch (e) {
                 console.error("DuckDB R2 Query Error:", e);
+                const detail = document.getElementById('errorDetail');
+                detail.style.display = 'block';
+                detail.textContent = `CHART DATA QUERY FAILED for "${symbol}": ` + (e && e.message ? e.message : String(e));
             }
         }
 
