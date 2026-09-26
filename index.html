@@ -65,6 +65,7 @@
         const R2_BASE_URL = 'https://pub-3a1a560916e2405a9787fd3d3d60d16e.r2.dev';
         // Parquet files available in R2
         const PARQUET_FILES = [
+            `${R2_BASE_URL}/2023.parquet`,
             `${R2_BASE_URL}/2024.parquet`,
             `${R2_BASE_URL}/2025.parquet`,
             `${R2_BASE_URL}/2026.parquet`
@@ -89,7 +90,7 @@
         // changed and R2 files were regenerated). Every visitor's IndexedDB cache - past
         // years included - is transparently invalidated and re-downloaded fresh exactly
         // once, without needing anyone to manually clear browser storage on their phone.
-        const CACHE_VERSION = 'v3';
+        const CACHE_VERSION = 'v4';
         const CACHE_DB_NAME = 'nse-parquet-cache';
         const CACHE_STORE = 'files';
         const CURRENT_YEAR = new Date().getFullYear();
@@ -212,6 +213,7 @@
                     FROM read_parquet([${LOCAL_PARQUET_FILES.map(f => `'${f}'`).join(',')}]) 
                     WHERE Symbol IS NOT NULL AND TRIM(Symbol) <> ''
                       AND Close IS NOT NULL AND Open IS NOT NULL
+                      AND UPPER(TRIM(Symbol)) NOT IN ('NSE','BSE','NIFTY','NIFTY 50','SENSEX')
                     ORDER BY Symbol ASC
                 `;
                 
