@@ -213,7 +213,7 @@
                     FROM read_parquet([${LOCAL_PARQUET_FILES.map(f => `'${f}'`).join(',')}]) 
                     WHERE Symbol IS NOT NULL AND TRIM(Symbol) <> ''
                       AND Close IS NOT NULL AND Open IS NOT NULL
-                      AND UPPER(TRIM(Symbol)) NOT IN ('NSE','BSE','NIFTY','NIFTY 50','SENSEX')
+                      AND UPPER(REGEXP_REPLACE(Symbol, '[^A-Za-z0-9]', '', 'g')) NOT IN ('NSE','BSE','NIFTY','NIFTY50','SENSEX')
                     ORDER BY Symbol ASC
                 `;
                 
