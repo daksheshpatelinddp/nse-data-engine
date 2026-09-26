@@ -202,6 +202,7 @@
                     SELECT DISTINCT Symbol 
                     FROM read_parquet([${LOCAL_PARQUET_FILES.map(f => `'${f}'`).join(',')}]) 
                     WHERE Symbol IS NOT NULL AND TRIM(Symbol) <> ''
+                      AND Close IS NOT NULL AND Open IS NOT NULL
                     ORDER BY Symbol ASC
                 `;
                 
