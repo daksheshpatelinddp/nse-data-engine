@@ -46,9 +46,9 @@
 
     <header>
         <div class="logo">AmiBroker</div>
-        <select id="symbolSelect"><option value="">Loading symbols...</option></select>
+        <select id="symbolSelect"><option value="">Initializing DuckDB...</option></select>
         <button id="loadBtn">Load Symbol</button>
-        <div id="statusBadge" class="status-badge status-online">Initializing...</div>
+        <div id="statusBadge" class="status-badge status-online">Connecting R2...</div>
     </header>
 
     <div class="tabs-bar" id="tabsBar">
@@ -57,20 +57,60 @@
 
     <div id="workspace"></div>
 
-    <script>
-        const API_URL = window.location.origin;
+    <script type="module">
+        import * as duckdb from 'https://cdn.jsdelivr.net/npm/@duckdb/duckdb-wasm@1.28.0/+esm';
+
+        // ⚠️ REPLACE THIS WITH YOUR CLOUDFLARE R2 PUBLIC SUBDOMAIN OR CUSTOM DOMAIN
+        const R2_BASE_URL = 'https://pub-3a1a560916e2405a9787fd3d3d60d16e.r2.dev'; 
+        
+        // Parquet files available in R2
+        const PARQUET_FILES = [
+            `${R2_BASE_URL}/2024.parquet`,
+            `${R2_BASE_URL}/2025.parquet`,
+            `${R2_BASE_URL}/2026.parquet`
+        ];
+
+        let db = null;
+        let conn = null;
         let availableSymbols = [];
         let tabCount = 0;
         let tabs = {};
         let activeTabId = null;
 
-        // Load Stock Symbols on startup
-        async function fetchSymbols() {
+        // Initialize DuckDB-WASM Engine
+        async function initDuckDB() {
             try {
-                const res = await fetch(`${API_URL}/api/symbols`);
-                if (!res.ok) throw new Error("No backend connection");
-                availableSymbols = await res.json();
+                const JSDELIVR_BUNDLES = duckdb.getJsDelivrBundles();
+                const bundle = await duckdb.selectBundle(JSDELIVR_BUNDLES);
                 
+                const worker = new Worker(bundle.mainWorker);
+                const logger = new duckdb.ConsoleLogger();
+                db = new duckdb.AsyncDuckDB(logger, worker);
+                await db.instantiate(bundle.mainModule);
+                conn = await db.connect();
+
+                console.log("DuckDB-WASM initialized successfully.");
+                await fetchSymbolsFromR2();
+            } catch (err) {
+                console.error("DuckDB initialization failed:", err);
+                document.getElementById('statusBadge').textContent = 'DuckDB / R2 Error';
+                document.getElementById('statusBadge').className = 'status-badge status-error';
+            }
+        }
+
+        // Fetch distinct symbols directly from Parquet stored in Cloudflare R2
+        async function fetchSymbolsFromR2() {
+            try {
+                const query = `
+                    SELECT DISTINCT Symbol 
+                    FROM read_parquet([${PARQUET_FILES.map(f => `'${f}'`).join(',')}]) 
+                    WHERE Symbol IS NOT NULL
+                    ORDER BY Symbol ASC
+                `;
+                
+                const result = await conn.query(query);
+                availableSymbols = result.toArray().map(row => row.toJSON().Symbol);
+
                 const select = document.getElementById('symbolSelect');
                 select.innerHTML = '';
                 availableSymbols.forEach(sym => {
@@ -79,18 +119,21 @@
                     opt.textContent = sym;
                     select.appendChild(opt);
                 });
-                
-                document.getElementById('statusBadge').textContent = `${availableSymbols.length} Symbols`;
+
+                document.getElementById('statusBadge').textContent = `${availableSymbols.length} Symbols (R2)`;
                 document.getElementById('statusBadge').className = 'status-badge status-online';
 
-                if (availableSymbols.length > 0) createNewTab(availableSymbols[0]);
+                if (availableSymbols.length > 0) {
+                    createNewTab(availableSymbols[0]);
+                }
             } catch (err) {
-                document.getElementById('statusBadge').textContent = 'No DB Data';
+                console.error("Failed to fetch symbols from R2 Parquet:", err);
+                document.getElementById('statusBadge').textContent = 'R2 Read Error';
                 document.getElementById('statusBadge').className = 'status-badge status-error';
             }
         }
 
-        // Indicator Logic
+        // Technical Indicators
         function calculateSMA(data, period) {
             let res = [];
             for (let i = 0; i < data.length; i++) {
@@ -159,13 +202,12 @@
             return res;
         }
 
-        // Create New Tab
+        // Workspace Tab Setup
         function createNewTab(symbol) {
             tabCount++;
             const tabId = `tab-${tabCount}`;
             const targetSymbol = symbol || (availableSymbols[0] || 'NSE');
 
-            // 1. Tab Button
             const tabsBar = document.getElementById('tabsBar');
             const addBtn = document.getElementById('addTabBtn');
             const tabEl = document.createElement('div');
@@ -173,12 +215,13 @@
             tabEl.id = `header-${tabId}`;
             tabEl.innerHTML = `
                 <span class="tab-title">${targetSymbol}</span>
-                <span class="close-tab" onclick="closeTab('${tabId}', event)">✕</span>
+                <span class="close-tab" id="close-${tabId}">✕</span>
             `;
             tabEl.onclick = () => switchTab(tabId);
             tabsBar.insertBefore(tabEl, addBtn);
 
-            // 2. Tab Workspace Layout
+            document.getElementById(`close-${tabId}`).onclick = (e) => closeTab(tabId, e);
+
             const workspace = document.getElementById('workspace');
             const contentEl = document.createElement('div');
             contentEl.className = 'tab-content';
@@ -186,25 +229,31 @@
             contentEl.innerHTML = `
                 <div class="pane-upper" id="upper-${tabId}">
                     <div class="pane-controls">
-                        <select onchange="changeChartStyle('${tabId}', this.value)">
+                        <select id="style-${tabId}">
                             <option value="candles">Candles</option>
                             <option value="line">Line</option>
                         </select>
-                        <button class="btn-sma" onclick="toggleOverlay('${tabId}', 'sma')">SMA 20</button>
-                        <button class="btn-ema" onclick="toggleOverlay('${tabId}', 'ema')">EMA 50</button>
-                        <button class="btn-bb" onclick="toggleOverlay('${tabId}', 'bb')">BB 20,2</button>
+                        <button class="btn-sma" id="btn-sma-${tabId}">SMA 20</button>
+                        <button class="btn-ema" id="btn-ema-${tabId}">EMA 50</button>
+                        <button class="btn-bb" id="btn-bb-${tabId}">BB 20,2</button>
                     </div>
                 </div>
                 <div class="pane-lower" id="lower-${tabId}">
                     <div class="pane-controls">
-                        <button class="btn-vol btn-active" onclick="setLowerIndicator('${tabId}', 'volume')">Volume</button>
-                        <button class="btn-rsi" onclick="setLowerIndicator('${tabId}', 'rsi')">RSI 14</button>
+                        <button class="btn-vol btn-active" id="btn-vol-${tabId}">Volume</button>
+                        <button class="btn-rsi" id="btn-rsi-${tabId}">RSI 14</button>
                     </div>
                 </div>
             `;
             workspace.appendChild(contentEl);
 
-            // 3. Initialize Independent Upper and Lower Panes
+            document.getElementById(`style-${tabId}`).onchange = (e) => changeChartStyle(tabId, e.target.value);
+            document.getElementById(`btn-sma-${tabId}`).onclick = () => toggleOverlay(tabId, 'sma');
+            document.getElementById(`btn-ema-${tabId}`).onclick = () => toggleOverlay(tabId, 'ema');
+            document.getElementById(`btn-bb-${tabId}`).onclick = () => toggleOverlay(tabId, 'bb');
+            document.getElementById(`btn-vol-${tabId}`).onclick = () => setLowerIndicator(tabId, 'volume');
+            document.getElementById(`btn-rsi-${tabId}`).onclick = () => setLowerIndicator(tabId, 'rsi');
+
             const upperChart = LightweightCharts.createChart(document.getElementById(`upper-${tabId}`), {
                 layout: { backgroundColor: '#0e1118', textColor: '#d1d4dc' },
                 grid: { vertLines: { color: '#1c202e' }, horzLines: { color: '#1c202e' } },
@@ -219,7 +268,6 @@
                 timeScale: { borderColor: '#232736', visible: true }
             });
 
-            // Sync Paning & Zooming across both Panes
             upperChart.timeScale().subscribeVisibleTimeRangeChange(r => lowerChart.timeScale().setVisibleTimeRange(r));
             lowerChart.timeScale().subscribeVisibleTimeRangeChange(r => upperChart.timeScale().setVisibleTimeRange(r));
 
@@ -241,8 +289,7 @@
                 mainSeries, volumeSeries,
                 lineSeries: null, rsiSeries: null,
                 data: [],
-                overlays: { sma: null, ema: null, bbUpper: null, bbLower: null },
-                lowerIndicator: 'volume'
+                overlays: { sma: null, ema: null, bbUpper: null, bbLower: null }
             };
 
             switchTab(tabId);
@@ -276,17 +323,37 @@
             switchTab(remaining[remaining.length - 1]);
         }
 
+        // Query stock data directly from Cloudflare R2 Parquet files via DuckDB-WASM
         async function loadDataForTab(tabId, symbol) {
             const tab = tabs[tabId];
             tab.symbol = symbol;
             document.querySelector(`#header-${tabId} .tab-title`).textContent = symbol;
 
             try {
-                const res = await fetch(`${API_URL}/api/ohlcv/${symbol}`);
-                if (!res.ok) throw new Error("Fetch failed");
-                const raw = await res.json();
+                const query = `
+                    SELECT 
+                        CAST(Date AS STRING) as time,
+                        Open as open,
+                        High as high,
+                        Low as low,
+                        Close as close,
+                        Volume as volume
+                    FROM read_parquet([${PARQUET_FILES.map(f => `'${f}'`).join(',')}])
+                    WHERE UPPER(Symbol) = '${symbol.toUpperCase()}'
+                    ORDER BY Date ASC
+                `;
 
-                tab.data = raw.sort((a, b) => (a.time > b.time ? 1 : -1));
+                const result = await conn.query(query);
+                const raw = result.toArray().map(row => row.toJSON());
+
+                tab.data = raw.map(d => ({
+                    time: d.time.split('T')[0],
+                    open: Number(d.open),
+                    high: Number(d.high),
+                    low: Number(d.low),
+                    close: Number(d.close),
+                    volume: Number(d.volume || 0)
+                }));
 
                 if (tab.chartStyle === 'candles') {
                     tab.mainSeries.setData(tab.data);
@@ -294,7 +361,6 @@
                     tab.lineSeries.setData(tab.data.map(d => ({ time: d.time, value: d.close })));
                 }
 
-                // Set Volume Data in Lower Pane
                 tab.volumeSeries.setData(tab.data.map(d => ({
                     time: d.time,
                     value: d.volume,
@@ -304,7 +370,7 @@
                 refreshOverlays(tabId);
                 tab.upperChart.timeScale().fitContent();
             } catch (e) {
-                console.error("Tab data error:", e);
+                console.error("DuckDB R2 Query Error:", e);
             }
         }
 
@@ -332,7 +398,7 @@
 
         function toggleOverlay(tabId, type) {
             const tab = tabs[tabId];
-            const btn = document.querySelector(`#content-${tabId} .btn-${type}`);
+            const btn = document.getElementById(`btn-${type}-${tabId}`);
 
             if (type === 'sma') {
                 if (tab.overlays.sma) {
@@ -374,8 +440,8 @@
 
         function setLowerIndicator(tabId, type) {
             const tab = tabs[tabId];
-            const volBtn = document.querySelector(`#content-${tabId} .btn-vol`);
-            const rsiBtn = document.querySelector(`#content-${tabId} .btn-rsi`);
+            const volBtn = document.getElementById(`btn-vol-${tabId}`);
+            const rsiBtn = document.getElementById(`btn-rsi-${tabId}`);
 
             if (type === 'volume') {
                 if (tab.rsiSeries) {
@@ -408,15 +474,15 @@
             if (tab.rsiSeries) tab.rsiSeries.setData(calculateRSI(tab.data, 14));
         }
 
-        document.getElementById('loadBtn').addEventListener('click', () => {
+        document.getElementById('loadBtn').onclick = () => {
             const sym = document.getElementById('symbolSelect').value;
             if (sym && activeTabId) loadDataForTab(activeTabId, sym);
-        });
+        };
 
-        document.getElementById('addTabBtn').addEventListener('click', () => {
+        document.getElementById('addTabBtn').onclick = () => {
             const sym = document.getElementById('symbolSelect').value;
             createNewTab(sym);
-        });
+        };
 
         window.addEventListener('resize', () => {
             Object.keys(tabs).forEach(tabId => {
@@ -430,7 +496,8 @@
             });
         });
 
-        fetchSymbols();
+        // Initialize application
+        initDuckDB();
     </script>
 </body>
 </html>
