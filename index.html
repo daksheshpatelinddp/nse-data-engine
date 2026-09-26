@@ -82,11 +82,20 @@
             try {
                 const JSDELIVR_BUNDLES = duckdb.getJsDelivrBundles();
                 const bundle = await duckdb.selectBundle(JSDELIVR_BUNDLES);
-                
-                const worker = new Worker(bundle.mainWorker);
+
+                // Browsers block `new Worker(crossOriginUrl)` directly (Worker scripts must
+                // be same-origin). Fetch the worker script text ourselves and instantiate it
+                // from a same-origin Blob URL instead - this is the standard workaround when
+                // loading DuckDB-WASM's worker from a CDN like jsDelivr.
+                const workerScript = await fetch(bundle.mainWorker).then(r => r.text());
+                const workerBlobUrl = URL.createObjectURL(
+                    new Blob([workerScript], { type: 'text/javascript' })
+                );
+                const worker = new Worker(workerBlobUrl);
                 const logger = new duckdb.ConsoleLogger();
                 db = new duckdb.AsyncDuckDB(logger, worker);
                 await db.instantiate(bundle.mainModule);
+                URL.revokeObjectURL(workerBlobUrl);
                 conn = await db.connect();
 
                 console.log("DuckDB-WASM initialized successfully.");
