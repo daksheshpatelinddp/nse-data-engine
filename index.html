@@ -83,6 +83,13 @@
         // filename key. The current year's file changes daily (new EOD row appended), so
         // its cache key includes today's date - this naturally "cache-busts" once per day
         // without needing any server-side versioning.
+        //
+        // CACHE_VERSION: bump this string any time the backend data pipeline changes in a
+        // way that invalidates already-cached bytes (e.g. convert.py's filtering logic
+        // changed and R2 files were regenerated). Every visitor's IndexedDB cache - past
+        // years included - is transparently invalidated and re-downloaded fresh exactly
+        // once, without needing anyone to manually clear browser storage on their phone.
+        const CACHE_VERSION = 'v2';
         const CACHE_DB_NAME = 'nse-parquet-cache';
         const CACHE_STORE = 'files';
         const CURRENT_YEAR = new Date().getFullYear();
@@ -137,7 +144,9 @@
                 const filename = url.split('/').pop();
                 const year = parseInt(filename, 10);
                 const isCurrentYear = year === CURRENT_YEAR;
-                const cacheKey = isCurrentYear ? `${filename}::${todayStr}` : filename;
+                const cacheKey = isCurrentYear
+                    ? `${filename}::${CACHE_VERSION}::${todayStr}`
+                    : `${filename}::${CACHE_VERSION}`;
 
                 let buffer = await idbGet(cacheKey);
                 if (buffer) {
