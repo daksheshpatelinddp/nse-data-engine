@@ -43,7 +43,22 @@ def convert_and_upload(db_files):
         print(f"Processing {db_file}...")
         try:
             conn = sqlite3.connect(db_file)
-            df = pd.read_sql_query("SELECT symbol, date, open, high, low, close, volume FROM ohlcv", conn)
+            # Defensive filter at the source: only ever ship rows that are a real,
+            # priced equity trading day. This guards against any bad rows already
+            # sitting in the .db file (e.g. leftover test inserts, or rows written
+            # before fetch_data.py's zero-price sanity check existed) ever reaching
+            # the parquet files / R2 / the frontend, regardless of how they got in.
+            df = pd.read_sql_query(
+                """
+                SELECT symbol, date, open, high, low, close, volume
+                FROM ohlcv
+                WHERE is_index = 0
+                  AND symbol IS NOT NULL AND TRIM(symbol) <> ''
+                  AND close IS NOT NULL AND close > 0
+                  AND open IS NOT NULL AND open > 0
+                """,
+                conn
+            )
             conn.close()
 
             if df.empty:
