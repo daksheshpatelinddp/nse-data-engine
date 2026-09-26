@@ -1,0 +1,41 @@
+name: Convert DB to Parquet & Upload R2
+
+on:
+  # 1. Manual trigger (converts ALL db files)
+  workflow_dispatch:
+
+  # 2. Daily trigger (runs right after daily_cron finishes)
+  workflow_run:
+    workflows: ["Daily NSE Fetcher"] # Make sure this matches the exact 'name:' in daily_cron.yml
+    types:
+      - completed
+
+jobs:
+  convert-and-upload:
+    # Runs automatically if daily_cron succeeded, OR if triggered manually
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas pyarrow boto3
+
+      - name: Run Conversion Script
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          # Set FORCE_ALL=true only when run manually via workflow_dispatch
+          FORCE_ALL: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
+        run: |
+          python convert.py
