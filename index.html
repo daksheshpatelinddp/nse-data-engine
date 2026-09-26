@@ -76,6 +76,89 @@
         let tabCount = 0;
         let tabs = {};
         let activeTabId = null;
+        let LOCAL_PARQUET_FILES = []; // virtual in-memory filenames registered with DuckDB-WASM
+
+        // ---- Browser cache layer (Step 2.5: IndexedDB caching of R2 parquet files) ----
+        // Past years are immutable once written, so they're cached forever under a plain
+        // filename key. The current year's file changes daily (new EOD row appended), so
+        // its cache key includes today's date - this naturally "cache-busts" once per day
+        // without needing any server-side versioning.
+        const CACHE_DB_NAME = 'nse-parquet-cache';
+        const CACHE_STORE = 'files';
+        const CURRENT_YEAR = new Date().getFullYear();
+
+        function openCacheDB() {
+            return new Promise((resolve, reject) => {
+                const req = indexedDB.open(CACHE_DB_NAME, 1);
+                req.onupgradeneeded = () => req.result.createObjectStore(CACHE_STORE);
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function idbGet(key) {
+            try {
+                const cdb = await openCacheDB();
+                return await new Promise((resolve, reject) => {
+                    const tx = cdb.transaction(CACHE_STORE, 'readonly');
+                    const req = tx.objectStore(CACHE_STORE).get(key);
+                    req.onsuccess = () => resolve(req.result || null);
+                    req.onerror = () => reject(req.error);
+                });
+            } catch (e) {
+                console.warn('IndexedDB read failed, falling back to network:', e);
+                return null;
+            }
+        }
+
+        async function idbPut(key, value) {
+            try {
+                const cdb = await openCacheDB();
+                await new Promise((resolve, reject) => {
+                    const tx = cdb.transaction(CACHE_STORE, 'readwrite');
+                    tx.objectStore(CACHE_STORE).put(value, key);
+                    tx.oncomplete = () => resolve();
+                    tx.onerror = () => reject(tx.error);
+                });
+            } catch (e) {
+                console.warn('IndexedDB write failed (non-fatal, continuing without cache):', e);
+            }
+        }
+
+        // Downloads each parquet file (from IndexedDB cache if present, else R2), then
+        // registers the raw bytes into DuckDB-WASM's virtual filesystem. Queries then read
+        // from these in-memory virtual files instead of re-fetching over HTTP every time -
+        // this is what makes repeat backtests/chart loads cost 0 R2 reads.
+        async function loadParquetFilesWithCache() {
+            const localNames = [];
+            const todayStr = new Date().toISOString().slice(0, 10);
+
+            for (const url of PARQUET_FILES) {
+                const filename = url.split('/').pop();
+                const year = parseInt(filename, 10);
+                const isCurrentYear = year === CURRENT_YEAR;
+                const cacheKey = isCurrentYear ? `${filename}::${todayStr}` : filename;
+
+                let buffer = await idbGet(cacheKey);
+                if (buffer) {
+                    document.getElementById('statusBadge').textContent = `Loading ${filename} (cached)...`;
+                } else {
+                    document.getElementById('statusBadge').textContent = `Downloading ${filename} from R2...`;
+                    const resp = await fetch(url);
+                    if (!resp.ok) {
+                        throw new Error(`Failed to fetch ${filename} from R2: HTTP ${resp.status}`);
+                    }
+                    buffer = await resp.arrayBuffer();
+                    await idbPut(cacheKey, buffer);
+                }
+
+                const localName = `local_${filename}`;
+                await db.registerFileBuffer(localName, new Uint8Array(buffer));
+                localNames.push(localName);
+            }
+
+            return localNames;
+        }
 
         // Initialize DuckDB-WASM Engine
         async function initDuckDB() {
@@ -99,6 +182,7 @@
                 conn = await db.connect();
 
                 console.log("DuckDB-WASM initialized successfully.");
+                LOCAL_PARQUET_FILES = await loadParquetFilesWithCache();
                 await fetchSymbolsFromR2();
             } catch (err) {
                 console.error("DuckDB initialization failed:", err);
@@ -110,12 +194,13 @@
             }
         }
 
+
         // Fetch distinct symbols directly from Parquet stored in Cloudflare R2
         async function fetchSymbolsFromR2() {
             try {
                 const query = `
                     SELECT DISTINCT Symbol 
-                    FROM read_parquet([${PARQUET_FILES.map(f => `'${f}'`).join(',')}]) 
+                    FROM read_parquet([${LOCAL_PARQUET_FILES.map(f => `'${f}'`).join(',')}]) 
                     WHERE Symbol IS NOT NULL AND TRIM(Symbol) <> ''
                     ORDER BY Symbol ASC
                 `;
@@ -353,7 +438,7 @@
                         Low as low,
                         Close as close,
                         Volume as volume
-                    FROM read_parquet([${PARQUET_FILES.map(f => `'${f}'`).join(',')}])
+                    FROM read_parquet([${LOCAL_PARQUET_FILES.map(f => `'${f}'`).join(',')}])
                     WHERE UPPER(Symbol) = '${symbol.toUpperCase()}'
                     ORDER BY Date ASC
                 `;
