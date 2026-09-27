@@ -404,6 +404,18 @@
             `;
             workspace.appendChild(contentEl);
 
+            // Make this tab visible BEFORE creating its charts. createChart() measures
+            // the container's size at creation time - if it's still display:none (the
+            // default .tab-content state until switchTab() runs), the chart is built
+            // with zero width/height, which throws an internal "Value is null" error on
+            // the very first setData() call. It self-corrects moments later via the
+            // chart library's own resize observer once the container becomes visible -
+            // but that produces a confusing flash of a false error first. Making the
+            // container visible up front avoids that entirely. switchTab() is still
+            // called normally later to handle the tab-header/active-symbol bookkeeping.
+            document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+            contentEl.classList.add('active');
+
             document.getElementById(`style-${tabId}`).onchange = (e) => changeChartStyle(tabId, e.target.value);
             document.getElementById(`btn-sma-${tabId}`).onclick = () => toggleOverlay(tabId, 'sma');
             document.getElementById(`btn-ema-${tabId}`).onclick = () => toggleOverlay(tabId, 'ema');
