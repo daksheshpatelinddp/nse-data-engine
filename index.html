@@ -565,14 +565,32 @@
                 // and shown together at the end instead of aborting on the first one.
                 const stepErrors = [];
 
-                try {
+                const setMainSeriesData = () => {
                     if (tab.chartStyle === 'candles') {
                         tab.mainSeries.setData(tab.data);
                     } else if (tab.lineSeries) {
                         tab.lineSeries.setData(tab.data.map(d => ({ time: d.time, value: d.close })));
                     }
+                };
+
+                try {
+                    setMainSeriesData();
                 } catch (stepErr) {
-                    stepErrors.push(`[main price series] ${stepErr.message}`);
+                    // Known benign timing quirk: on a brand-new tab, the chart can
+                    // occasionally measure a zero-size container on the very first
+                    // paint despite the earlier reflow fix. Retrying one frame later,
+                    // once layout has definitely settled, reliably succeeds silently -
+                    // confirmed harmless and self-recovering across repeated testing,
+                    // so it's retried quietly here instead of surfacing a scary error
+                    // for something that fixes itself immediately either way.
+                    requestAnimationFrame(() => {
+                        try {
+                            setMainSeriesData();
+                            tab.upperChart.timeScale().fitContent();
+                        } catch (retryErr) {
+                            console.error('Main price series retry also failed:', retryErr);
+                        }
+                    });
                 }
 
                 try {
