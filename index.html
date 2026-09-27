@@ -415,6 +415,13 @@
             // called normally later to handle the tab-header/active-symbol bookkeeping.
             document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
             contentEl.classList.add('active');
+            // Adding the class above changes the DOM, but the browser doesn't
+            // necessarily recompute layout synchronously just from that - and
+            // createChart() below runs in this same script tick. Reading a
+            // layout-dependent property forces the browser to flush/recalculate
+            // layout immediately, so the container's real (now-visible) size is
+            // what the charts actually measure, instead of a stale zero size.
+            void contentEl.offsetHeight;
 
             document.getElementById(`style-${tabId}`).onchange = (e) => changeChartStyle(tabId, e.target.value);
             document.getElementById(`btn-sma-${tabId}`).onclick = () => toggleOverlay(tabId, 'sma');
