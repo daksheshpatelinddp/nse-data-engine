@@ -558,10 +558,13 @@
                     volume: Number(d.volume || 0)
                 }));
 
-                // Each rendering step is isolated with its own label so that if one
-                // throws, the error message tells us exactly which step failed -
-                // "Value is null" from the chart library is too generic on its own
-                // to know whether it's the candles, volume bars, or an indicator.
+                // Each rendering step is independent and must run even if an earlier
+                // one fails - e.g. if the candlestick series throws (a transient
+                // layout-timing issue), that must NOT prevent the volume bars or
+                // indicators from still receiving their data. Errors are collected
+                // and shown together at the end instead of aborting on the first one.
+                const stepErrors = [];
+
                 try {
                     if (tab.chartStyle === 'candles') {
                         tab.mainSeries.setData(tab.data);
@@ -569,7 +572,7 @@
                         tab.lineSeries.setData(tab.data.map(d => ({ time: d.time, value: d.close })));
                     }
                 } catch (stepErr) {
-                    throw new Error(`[main price series] ${stepErr.message}`);
+                    stepErrors.push(`[main price series] ${stepErr.message}`);
                 }
 
                 try {
@@ -579,25 +582,29 @@
                         color: d.close >= d.open ? 'rgba(38, 166, 154, 0.6)' : 'rgba(239, 83, 80, 0.6)'
                     })));
                 } catch (stepErr) {
-                    throw new Error(`[volume series] ${stepErr.message}`);
+                    stepErrors.push(`[volume series] ${stepErr.message}`);
                 }
 
                 try {
                     refreshOverlays(tabId);
                 } catch (stepErr) {
-                    throw new Error(`[indicator overlays] ${stepErr.message}`);
+                    stepErrors.push(`[indicator overlays] ${stepErr.message}`);
                 }
 
                 try {
                     tab.upperChart.timeScale().fitContent();
                 } catch (stepErr) {
-                    throw new Error(`[fitContent] ${stepErr.message}`);
+                    stepErrors.push(`[fitContent] ${stepErr.message}`);
                 }
 
                 if (tab.data.length === 0) {
                     const detail = document.getElementById('errorDetail');
                     detail.style.display = 'block';
                     detail.textContent = `NO DATA for symbol "${symbol}". Query ran successfully but returned 0 rows - check that the Symbol value matches exactly what's stored in the parquet files (case, spacing, suffix like .NS/.NSE).`;
+                } else if (stepErrors.length > 0) {
+                    const detail = document.getElementById('errorDetail');
+                    detail.style.display = 'block';
+                    detail.textContent = `CHART RENDER ISSUE(S) for "${symbol}" (data loaded fine, some drawing steps hit a snag - usually harmless/self-recovering):\n` + stepErrors.join('\n');
                 }
             } catch (e) {
                 console.error("DuckDB R2 Query Error:", e);
