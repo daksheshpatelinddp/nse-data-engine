@@ -246,7 +246,21 @@
                 document.getElementById('statusBadge').className = 'status-badge status-online';
 
                 if (availableSymbols.length > 0) {
-                    createNewTab(availableSymbols[0]);
+                    // Don't just take availableSymbols[0] (alphabetically first) - a
+                    // contaminated index/segment-summary row can still slip through
+                    // sorting-based defaults even after filtering. Actively seek a
+                    // known, liquid, real stock first; only fall back to "first in
+                    // list minus obvious non-tickers" if none of those are present
+                    // (e.g. a very narrow custom dataset).
+                    const PREFERRED_DEFAULTS = ['RELIANCE', 'TCS', 'INFY', 'HDFCBANK', 'ICICIBANK', 'SBIN'];
+                    const KNOWN_BAD = ['NSE', 'BSE', 'NIFTY', 'NIFTY 50', 'SENSEX'];
+                    const normalize = s => String(s).replace(/[^A-Za-z0-9 ]/g, '').toUpperCase().trim();
+
+                    let defaultSymbol = availableSymbols.find(s => PREFERRED_DEFAULTS.includes(normalize(s)));
+                    if (!defaultSymbol) {
+                        defaultSymbol = availableSymbols.find(s => !KNOWN_BAD.includes(normalize(s)));
+                    }
+                    createNewTab(defaultSymbol || availableSymbols[0]);
                 }
             } catch (err) {
                 console.error("Failed to fetch symbols from R2 Parquet:", err);
@@ -331,7 +345,7 @@
         function createNewTab(symbol) {
             tabCount++;
             const tabId = `tab-${tabCount}`;
-            const targetSymbol = symbol || (availableSymbols[0] || 'NSE');
+            const targetSymbol = symbol || availableSymbols[0] || 'NIFTY_UNAVAILABLE';
 
             const tabsBar = document.getElementById('tabsBar');
             const addBtn = document.getElementById('addTabBtn');
