@@ -55,12 +55,6 @@ jobs:
       id: dates
       run: |
         if [ "${{ github.event_name }}" = "schedule" ]; then
-          # Scheduled runs: find the most recent date already stored across every
-          # yearly db, and fetch from the day after that through yesterday (today's
-          # bhavcopy usually isn't published yet when this runs). On a normal day
-          # this resolves to exactly one missing trading day; if a prior run ever
-          # failed, it self-heals by picking up wherever it left off instead of
-          # re-scanning full history.
           LAST_DATE=$(python3 -c "
         import os, sqlite3
         dates = []
@@ -100,14 +94,11 @@ jobs:
       run: |
         git config --global user.name "GitHub Actions Bot"
         git config --global user.email "actions@github.com"
-           
-          # Remove LFS tracking manually for database files
-          git rm --cached nse_*.db || true
-          
+
+        # Remove LFS tracking manually for database files
+        git rm --cached nse_*.db || true
+
         git add nse_*.db
         git commit -m "Automated update: Yearly NSE Databases" || exit 0
-        git stash --include-untracked
         git pull --rebase origin main
         git push origin main
-        
-        
