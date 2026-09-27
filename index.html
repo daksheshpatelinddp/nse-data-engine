@@ -40,6 +40,10 @@
         .status-badge { margin-left: auto; font-size: 0.75rem; padding: 3px 8px; border-radius: 3px; font-weight: 600; }
         .status-online { background: rgba(38, 166, 154, 0.2); color: #26a69a; }
         .status-error { background: rgba(239, 83, 80, 0.2); color: #ef5350; }
+        /* Crosshair OHLC legend - follows the pointer like AmiBroker/TradingView */
+        .ohlc-legend { position: absolute; top: 8px; right: 12px; z-index: 10; font-size: 0.72rem; font-family: monospace; background: rgba(22, 26, 37, 0.85); padding: 4px 10px; border-radius: 4px; border: 1px solid #232736; color: #d1d4dc; display: none; white-space: nowrap; }
+        .ohlc-legend .up { color: #26a69a; }
+        .ohlc-legend .down { color: #ef5350; }
     </style>
 </head>
 <body>
@@ -90,7 +94,7 @@
         // changed and R2 files were regenerated). Every visitor's IndexedDB cache - past
         // years included - is transparently invalidated and re-downloaded fresh exactly
         // once, without needing anyone to manually clear browser storage on their phone.
-        const CACHE_VERSION = 'v4';
+        const CACHE_VERSION = 'v5'; // fresh reset - forces every visitor to re-pull clean data once
         const CACHE_DB_NAME = 'nse-parquet-cache';
         const CACHE_STORE = 'files';
         const CURRENT_YEAR = new Date().getFullYear();
@@ -208,12 +212,21 @@
         // Fetch distinct symbols directly from Parquet stored in Cloudflare R2
         async function fetchSymbolsFromR2() {
             try {
+                // Structural filter instead of guessing bad string values: a real, actively
+                // traded stock has hundreds of trading days across 2023-2026. A junk/test
+                // row (however it got in, whatever it's literally spelled as) will have only
+                // a handful of rows at most. Requiring a minimum row count with valid prices
+                // eliminates this whole category of bad data at once, rather than needing to
+                // know in advance what the bad value looks like.
                 const query = `
-                    SELECT DISTINCT Symbol 
-                    FROM read_parquet([${LOCAL_PARQUET_FILES.map(f => `'${f}'`).join(',')}]) 
+                    SELECT Symbol
+                    FROM read_parquet([${LOCAL_PARQUET_FILES.map(f => `'${f}'`).join(',')}])
                     WHERE Symbol IS NOT NULL AND TRIM(Symbol) <> ''
-                      AND Close IS NOT NULL AND Open IS NOT NULL
-                      AND UPPER(REGEXP_REPLACE(Symbol, '[^A-Za-z0-9]', '', 'g')) NOT IN ('NSE','BSE','NIFTY','NIFTY50','SENSEX')
+                    GROUP BY Symbol
+                    HAVING COUNT(*) >= 50
+                       AND SUM(CASE WHEN Close IS NOT NULL AND Close > 0
+                                     AND Open IS NOT NULL AND Open > 0
+                                THEN 1 ELSE 0 END) >= 50
                     ORDER BY Symbol ASC
                 `;
                 
@@ -349,6 +362,7 @@
                         <button class="btn-ema" id="btn-ema-${tabId}">EMA 50</button>
                         <button class="btn-bb" id="btn-bb-${tabId}">BB 20,2</button>
                     </div>
+                    <div class="ohlc-legend" id="legend-${tabId}"></div>
                 </div>
                 <div class="pane-lower" id="lower-${tabId}">
                     <div class="pane-controls">
@@ -403,6 +417,31 @@
                 data: [],
                 overlays: { sma: null, ema: null, bbUpper: null, bbLower: null }
             };
+
+            // Live OHLC legend that follows the crosshair/finger across the chart -
+            // looks up the hovered candle's data and shows it top-right, AmiBroker-style.
+            upperChart.subscribeCrosshairMove(param => {
+                const legend = document.getElementById(`legend-${tabId}`);
+                if (!legend) return;
+                const t = tabs[tabId];
+                if (!param || !param.time || !t) {
+                    legend.style.display = 'none';
+                    return;
+                }
+                const point = t.data.find(d => d.time === param.time);
+                if (!point) {
+                    legend.style.display = 'none';
+                    return;
+                }
+                const cls = point.close >= point.open ? 'up' : 'down';
+                legend.style.display = 'block';
+                legend.innerHTML =
+                    `<b>${t.symbol}</b> &nbsp;O <span class="${cls}">${point.open.toFixed(2)}</span>` +
+                    ` &nbsp;H <span class="${cls}">${point.high.toFixed(2)}</span>` +
+                    ` &nbsp;L <span class="${cls}">${point.low.toFixed(2)}</span>` +
+                    ` &nbsp;C <span class="${cls}">${point.close.toFixed(2)}</span>` +
+                    ` &nbsp;Vol <span class="${cls}">${point.volume.toLocaleString('en-IN')}</span>`;
+            });
 
             switchTab(tabId);
             loadDataForTab(tabId, targetSymbol);
