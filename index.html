@@ -425,8 +425,11 @@
                 timeScale: { borderColor: '#232736', visible: true }
             });
 
-            upperChart.timeScale().subscribeVisibleTimeRangeChange(r => lowerChart.timeScale().setVisibleTimeRange(r));
-            lowerChart.timeScale().subscribeVisibleTimeRangeChange(r => upperChart.timeScale().setVisibleTimeRange(r));
+            // Note: subscribeVisibleTimeRangeChange is the correct subscribe method name,
+            // but the corresponding setter on the *other* chart is setVisibleRange - there
+            // is no setVisibleTimeRange method in lightweight-charts v4's API.
+            upperChart.timeScale().subscribeVisibleTimeRangeChange(r => { if (r) lowerChart.timeScale().setVisibleRange(r); });
+            lowerChart.timeScale().subscribeVisibleTimeRangeChange(r => { if (r) upperChart.timeScale().setVisibleRange(r); });
 
             const mainSeries = upperChart.addCandlestickSeries({
                 upColor: '#26a69a', downColor: '#ef5350',
