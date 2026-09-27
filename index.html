@@ -231,7 +231,24 @@
                 `;
                 
                 const result = await conn.query(query);
-                availableSymbols = result.toArray().map(row => row.toJSON().Symbol);
+                const rawRows = result.toArray().map(row => row.toJSON());
+
+                // Defensive extraction: don't assume the JS object key is exactly
+                // "Symbol" - depending on the DuckDB-WASM/Arrow binding, it can come
+                // back with different casing. Since this query selects exactly one
+                // column, grabbing the first (only) value works regardless of what
+                // the key is actually named.
+                availableSymbols = rawRows.map(obj => obj.Symbol ?? obj.symbol ?? Object.values(obj)[0]);
+
+                // One-time diagnostic: if extraction still failed (first symbol is
+                // falsy despite the query returning rows), show the raw shape of a
+                // row on-screen so we can see exactly what DuckDB actually returned,
+                // instead of silently falling through to a placeholder symbol.
+                if (rawRows.length > 0 && !availableSymbols[0]) {
+                    const detail = document.getElementById('errorDetail');
+                    detail.style.display = 'block';
+                    detail.textContent = 'SYMBOL EXTRACTION FAILED - raw first row from query: ' + JSON.stringify(rawRows[0]);
+                }
 
                 const select = document.getElementById('symbolSelect');
                 select.innerHTML = '';
