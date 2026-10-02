@@ -40,15 +40,18 @@ jobs:
       run: |
         python -c "
         import os, sqlite3
-        for f in os.listdir('.'):
+        db_dir = 'data/databases'
+        os.makedirs(db_dir, exist_ok=True)
+        for f in os.listdir(db_dir):
             if f.endswith('.db'):
+                path = os.path.join(db_dir, f)
                 try:
-                    conn = sqlite3.connect(f)
+                    conn = sqlite3.connect(path)
                     conn.execute('PRAGMA quick_check;')
                     conn.close()
                 except Exception as e:
-                    print(f'Removing corrupted file: {f}')
-                    os.remove(f)
+                    print(f'Removing corrupted file: {path}')
+                    os.remove(path)
         "
 
     - name: Determine Fetch Date Range
@@ -57,17 +60,19 @@ jobs:
         if [ "${{ github.event_name }}" = "schedule" ]; then
           LAST_DATE=$(python3 -c "
         import os, sqlite3
+        db_dir = 'data/databases'
         dates = []
-        for f in os.listdir('.'):
-            if f.startswith('nse_') and f.endswith('.db') and f[4:8].isdigit():
-                try:
-                    conn = sqlite3.connect(f)
-                    row = conn.execute('SELECT MAX(date) FROM ohlcv').fetchone()
-                    conn.close()
-                    if row and row[0]:
-                        dates.append(row[0])
-                except Exception:
-                    pass
+        if os.path.isdir(db_dir):
+            for f in os.listdir(db_dir):
+                if f.startswith('nse_') and f.endswith('.db') and f[4:8].isdigit():
+                    try:
+                        conn = sqlite3.connect(os.path.join(db_dir, f))
+                        row = conn.execute('SELECT MAX(date) FROM ohlcv').fetchone()
+                        conn.close()
+                        if row and row[0]:
+                            dates.append(row[0])
+                    except Exception:
+                        pass
         print(max(dates) if dates else '')
         ")
           if [ -n "$LAST_DATE" ]; then
@@ -84,7 +89,7 @@ jobs:
         fi
 
     - name: Run Fetcher Script
-      run: python fetch_data.py
+      run: python backend/fetch_data.py
       env:
         START_DATE: ${{ steps.dates.outputs.start_date || '2000-01-01' }}
         END_DATE: ${{ steps.dates.outputs.end_date || '' }}
@@ -96,9 +101,9 @@ jobs:
         git config --global user.email "actions@github.com"
 
         # Remove LFS tracking manually for database files
-        git rm --cached nse_*.db || true
+        git rm --cached data/databases/nse_*.db || true
 
-        git add nse_*.db
+        git add data/databases/nse_*.db
         git commit -m "Automated update: Yearly NSE Databases" || exit 0
         git pull --rebase origin main
         git push origin main
