@@ -38,4 +38,4 @@ jobs:
           # Set FORCE_ALL=true only when run manually via workflow_dispatch
           FORCE_ALL: ${{ github.event_name == 'workflow_dispatch' && 'true' || 'false' }}
         run: |
-          python convert.py
+          python backend/convert.py
