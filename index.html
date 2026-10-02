@@ -2,28 +2,53 @@
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>AmiBroker Web Workstation</title>
+    <link rel="manifest" href="/manifest.json">
+    <meta name="theme-color" content="#0d0f14">
+    <link rel="apple-touch-icon" href="/icon-192.png">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <script src="https://unpkg.com/lightweight-charts@4.1.3/dist/lightweight-charts.standalone.production.js"></script>
     <style>
         * { box-sizing: border-box; margin: 0; padding: 0; }
-        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: #0e1118; color: #d1d4dc; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+        :root {
+            --bg-main: #0e1118;
+            --bg-panel: #161a25;
+            --bg-input: #232736;
+            --border: #31364a;
+            --border-soft: #232736;
+            --text-main: #d1d4dc;
+            --text-bright: #e0e3eb;
+            --accent: #2962ff;
+        }
+        body.theme-light {
+            --bg-main: #f4f5f7;
+            --bg-panel: #ffffff;
+            --bg-input: #eef0f4;
+            --border: #d3d7e0;
+            --border-soft: #e2e5ec;
+            --text-main: #1a1d26;
+            --text-bright: #0d0f14;
+        }
+        body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; background: var(--bg-main); color: var(--text-main); height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
         
         /* Top Navigation Bar */
-        header { background: #161a25; border-bottom: 1px solid #232736; padding: 6px 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
-        .logo { font-weight: bold; color: #2962ff; font-size: 1.1rem; margin-right: 6px; }
-        select, button { background: #232736; color: #e0e3eb; border: 1px solid #31364a; border-radius: 4px; padding: 5px 10px; font-size: 0.82rem; cursor: pointer; outline: none; }
-        select:focus, button:focus { border-color: #2962ff; }
+        header { background: var(--bg-panel); border-bottom: 1px solid var(--border-soft); padding: 6px 12px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+        .logo { font-weight: bold; color: var(--accent); font-size: 1.1rem; margin-right: 6px; }
+        select, button { background: var(--bg-input); color: var(--text-bright); border: 1px solid var(--border); border-radius: 4px; padding: 5px 10px; font-size: 0.82rem; cursor: pointer; outline: none; }
+
+        select:focus, button:focus { border-color: var(--accent); }
         button:hover { background: #2c3244; }
-        .btn-active { background: #2962ff !important; color: white; border-color: #2962ff; }
+        .btn-active { background: var(--accent) !important; color: white; border-color: var(--accent); }
         
         /* Tab Navigation Bar */
-        .tabs-bar { background: #12151e; display: flex; align-items: center; border-bottom: 1px solid #232736; overflow-x: auto; white-space: nowrap; }
-        .tab { padding: 7px 14px; background: #181c28; border-right: 1px solid #232736; color: #787b86; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; font-size: 0.82rem; user-select: none; }
-        .tab.active { background: #0e1118; color: #2962ff; border-top: 2px solid #2962ff; font-weight: 600; }
+        .tabs-bar { background: var(--bg-panel); display: flex; align-items: center; border-bottom: 1px solid var(--border-soft); overflow-x: auto; white-space: nowrap; }
+        .tab { padding: 7px 14px; background: var(--bg-input); border-right: 1px solid var(--border-soft); color: #787b86; cursor: pointer; display: inline-flex; align-items: center; gap: 8px; font-size: 0.82rem; user-select: none; }
+        .tab.active { background: var(--bg-main); color: var(--accent); border-top: 2px solid var(--accent); font-weight: 600; }
         .tab .close-tab { border-radius: 50%; width: 15px; height: 15px; display: inline-flex; align-items: center; justify-content: center; font-size: 10px; }
         .tab .close-tab:hover { background: #2c3244; color: white; }
-        .add-tab-btn { padding: 4px 10px; background: transparent; border: none; color: #2962ff; font-size: 1.2rem; cursor: pointer; }
+        .add-tab-btn { padding: 4px 10px; background: transparent; border: none; color: var(--accent); font-size: 1.2rem; cursor: pointer; }
         
         /* Main Workspace Container */
         #workspace { flex: 1; position: relative; width: 100%; height: 100%; display: flex; flex-direction: column; }
@@ -31,11 +56,21 @@
         .tab-content.active { display: flex; }
         
         /* AmiBroker Dual Pane Layout */
-        .pane-upper { flex: 7; position: relative; width: 100%; border-bottom: 2px solid #232736; }
+        .pane-upper { flex: 7; position: relative; width: 100%; border-bottom: 2px solid var(--border-soft); }
         .pane-lower { flex: 3; position: relative; width: 100%; }
         
         /* Pane Controls Overlay */
-        .pane-controls { position: absolute; top: 8px; left: 8px; z-index: 10; display: flex; gap: 6px; flex-wrap: wrap; background: rgba(22, 26, 37, 0.85); padding: 4px 8px; border-radius: 4px; border: 1px solid #232736; }
+        .pane-controls { position: absolute; top: 8px; left: 8px; z-index: 10; display: flex; gap: 6px; flex-wrap: wrap; background: var(--bg-panel); padding: 4px 8px; border-radius: 4px; border: 1px solid var(--border-soft); opacity: 0.95; }
+
+        /* Drawing tools (Phase 3, Group B) */
+        .btn-draw.tool-active { background: #ff9800 !important; color: #1a1200; border-color: #ff9800; }
+        .drawing-overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 5; pointer-events: none; }
+        .drawing-overlay .draw-line { stroke: #ff9800; stroke-width: 2; pointer-events: stroke; cursor: pointer; }
+        .drawing-overlay .draw-line-hit { stroke: transparent; stroke-width: 18; pointer-events: stroke; cursor: pointer; }
+        .drawing-overlay .draw-line.selected { stroke: #ffeb3b; stroke-width: 3; }
+        .drawing-overlay .draw-delete-btn { pointer-events: auto; cursor: pointer; }
+        .drawing-overlay .draw-delete-btn circle { fill: #ef5350; }
+        .drawing-overlay .draw-delete-btn text { fill: white; font-size: 12px; font-weight: bold; text-anchor: middle; dominant-baseline: central; }
         
         .status-badge { margin-left: auto; font-size: 0.75rem; padding: 3px 8px; border-radius: 3px; font-weight: 600; }
         .status-online { background: rgba(38, 166, 154, 0.2); color: #26a69a; }
@@ -52,9 +87,77 @@
         <div class="logo">AmiBroker</div>
         <select id="symbolSelect"><option value="">Initializing DuckDB...</option></select>
         <button id="loadBtn">Load Symbol</button>
+        <button id="settingsBtn" title="Settings" style="font-size:1rem; padding:5px 9px;">&#9881;</button>
         <div id="statusBadge" class="status-badge status-online">Connecting R2...</div>
     </header>
     <div id="errorDetail" style="display:none; background:#3a1a1a; color:#ff8a80; font-family:monospace; font-size:0.75rem; padding:8px 12px; white-space:pre-wrap; word-break:break-word; border-bottom:1px solid #5a2a2a;"></div>
+
+    <!-- Settings panel: slides in as a full overlay, closed by default -->
+    <div id="settingsOverlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:100;">
+        <div id="settingsPanel" style="position:absolute; top:0; right:0; bottom:0; width:min(340px, 92vw); background:var(--bg-panel); border-left:1px solid var(--border); padding:16px; overflow-y:auto;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:16px;">
+                <h2 style="font-size:1.05rem;">Settings</h2>
+                <button id="closeSettingsBtn" style="padding:4px 10px;">&times;</button>
+            </div>
+
+            <div style="margin-bottom:18px;">
+                <label style="display:block; font-size:0.78rem; color:#868a9c; margin-bottom:6px;">THEME</label>
+                <select id="setTheme" style="width:100%;">
+                    <option value="dark">Dark</option>
+                    <option value="light">Light</option>
+                </select>
+            </div>
+
+            <div style="margin-bottom:18px;">
+                <label style="display:block; font-size:0.78rem; color:#868a9c; margin-bottom:6px;">DEFAULT CHART TYPE</label>
+                <select id="setDefaultChartType" style="width:100%;">
+                    <option value="candles">Candles</option>
+                    <option value="line">Line</option>
+                </select>
+            </div>
+
+            <div style="margin-bottom:18px;">
+                <label style="display:block; font-size:0.78rem; color:#868a9c; margin-bottom:6px;">AUTO-APPLY ON NEW CHARTS</label>
+                <label style="display:flex; align-items:center; gap:8px; margin-bottom:8px; font-size:0.85rem;">
+                    <input type="checkbox" id="setAutoSMA"> SMA 20
+                </label>
+                <label style="display:flex; align-items:center; gap:8px; margin-bottom:8px; font-size:0.85rem;">
+                    <input type="checkbox" id="setAutoEMA"> EMA 50
+                </label>
+                <label style="display:flex; align-items:center; gap:8px; font-size:0.85rem;">
+                    <input type="checkbox" id="setAutoBB"> Bollinger Bands 20,2
+                </label>
+            </div>
+
+            <div style="margin-bottom:18px;">
+                <label style="display:block; font-size:0.78rem; color:#868a9c; margin-bottom:6px;">DEFAULT LOWER PANE</label>
+                <select id="setDefaultLower" style="width:100%;">
+                    <option value="volume">Volume</option>
+                    <option value="rsi">RSI 14</option>
+                </select>
+            </div>
+
+            <div style="margin-bottom:18px;">
+                <label style="display:block; font-size:0.78rem; color:#868a9c; margin-bottom:6px;">VOLUME FORMAT</label>
+                <select id="setVolumeFormat" style="width:100%;">
+                    <option value="indian">Indian (Lakhs/Crores) - e.g. 1,79,16,507</option>
+                    <option value="raw">Raw number</option>
+                </select>
+            </div>
+
+            <div style="margin-bottom:18px;">
+                <label style="display:block; font-size:0.78rem; color:#868a9c; margin-bottom:6px;">PRICE DECIMAL PLACES</label>
+                <select id="setDecimals" style="width:100%;">
+                    <option value="2">2 (e.g. 735.60)</option>
+                    <option value="1">1 (e.g. 735.6)</option>
+                    <option value="0">0 (e.g. 736)</option>
+                </select>
+            </div>
+
+            <button id="saveSettingsBtn" style="width:100%; background:var(--accent); color:white; border-color:var(--accent); padding:9px; margin-top:8px;">Save</button>
+            <div id="settingsSavedMsg" style="display:none; text-align:center; color:#26a69a; font-size:0.8rem; margin-top:8px;">Saved - applies to new/reopened charts</div>
+        </div>
+    </div>
 
     <div class="tabs-bar" id="tabsBar">
         <button class="add-tab-btn" id="addTabBtn" title="New AmiBroker Tab">+</button>
@@ -83,6 +186,122 @@
         let activeTabId = null;
         let LOCAL_PARQUET_FILES = []; // virtual in-memory filenames registered with DuckDB-WASM
 
+        // ---- Settings (Phase 3.5.2): small, synchronous, persisted in
+        // localStorage - deliberately separate from the large parquet data
+        // cache in IndexedDB, since this is just a handful of preferences.
+        const SETTINGS_KEY = 'amibroker-settings-v1';
+        const DEFAULT_SETTINGS = {
+            theme: 'dark',
+            defaultChartType: 'candles',
+            autoSMA: false,
+            autoEMA: false,
+            autoBB: false,
+            defaultLower: 'volume',
+            volumeFormat: 'indian',
+            decimals: 2
+        };
+
+        function loadSettings() {
+            try {
+                const raw = localStorage.getItem(SETTINGS_KEY);
+                if (!raw) return { ...DEFAULT_SETTINGS };
+                return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+            } catch (e) {
+                console.warn('Settings read failed, using defaults:', e);
+                return { ...DEFAULT_SETTINGS };
+            }
+        }
+
+        function saveSettings(settings) {
+            try {
+                localStorage.setItem(SETTINGS_KEY, JSON.stringify(settings));
+            } catch (e) {
+                console.warn('Settings save failed (non-fatal):', e);
+            }
+        }
+
+        let appSettings = loadSettings();
+
+        function applyTheme() {
+            document.body.classList.toggle('theme-light', appSettings.theme === 'light');
+        }
+
+        // Chart canvases are drawn by the library, not styled via CSS - so theme
+        // switching needs to explicitly pass matching colors at chart-creation
+        // time, or the chart would stay dark while the surrounding UI goes light.
+        function getChartColors() {
+            return appSettings.theme === 'light'
+                ? { background: '#ffffff', text: '#1a1d26', grid: '#e6e8ee', border: '#d3d7e0' }
+                : { background: '#0e1118', text: '#d1d4dc', grid: '#1c202e', border: '#232736' };
+        }
+
+        function formatPrice(n) {
+            if (n === null || n === undefined || isNaN(n)) return '-';
+            return Number(n).toFixed(Number(appSettings.decimals));
+        }
+
+        function formatVolume(n) {
+            if (n === null || n === undefined || isNaN(n)) return '-';
+            return appSettings.volumeFormat === 'raw'
+                ? Number(n).toLocaleString('en-US')
+                : Number(n).toLocaleString('en-IN');
+        }
+
+        function populateSettingsForm() {
+            document.getElementById('setTheme').value = appSettings.theme;
+            document.getElementById('setDefaultChartType').value = appSettings.defaultChartType;
+            document.getElementById('setAutoSMA').checked = appSettings.autoSMA;
+            document.getElementById('setAutoEMA').checked = appSettings.autoEMA;
+            document.getElementById('setAutoBB').checked = appSettings.autoBB;
+            document.getElementById('setDefaultLower').value = appSettings.defaultLower;
+            document.getElementById('setVolumeFormat').value = appSettings.volumeFormat;
+            document.getElementById('setDecimals').value = String(appSettings.decimals);
+        }
+
+        function readSettingsForm() {
+            return {
+                theme: document.getElementById('setTheme').value,
+                defaultChartType: document.getElementById('setDefaultChartType').value,
+                autoSMA: document.getElementById('setAutoSMA').checked,
+                autoEMA: document.getElementById('setAutoEMA').checked,
+                autoBB: document.getElementById('setAutoBB').checked,
+                defaultLower: document.getElementById('setDefaultLower').value,
+                volumeFormat: document.getElementById('setVolumeFormat').value,
+                decimals: Number(document.getElementById('setDecimals').value)
+            };
+        }
+
+        applyTheme();
+
+        document.getElementById('settingsBtn').addEventListener('click', () => {
+            populateSettingsForm();
+            document.getElementById('settingsSavedMsg').style.display = 'none';
+            document.getElementById('settingsOverlay').style.display = 'block';
+        });
+        document.getElementById('closeSettingsBtn').addEventListener('click', () => {
+            document.getElementById('settingsOverlay').style.display = 'none';
+        });
+        document.getElementById('settingsOverlay').addEventListener('click', (e) => {
+            if (e.target.id === 'settingsOverlay') document.getElementById('settingsOverlay').style.display = 'none';
+        });
+        document.getElementById('saveSettingsBtn').addEventListener('click', () => {
+            appSettings = readSettingsForm();
+            saveSettings(appSettings);
+            applyTheme();
+            document.getElementById('settingsSavedMsg').style.display = 'block';
+        });
+
+        // Register the app-shell service worker (Phase 3.5.1 - installable PWA).
+        // Wrapped defensively: some browsers/contexts don't support service
+        // workers at all, and that must never block the app itself.
+        if ('serviceWorker' in navigator) {
+            window.addEventListener('load', () => {
+                navigator.serviceWorker.register('/sw.js').catch(err => {
+                    console.warn('Service worker registration failed (non-fatal):', err);
+                });
+            });
+        }
+
         // ---- Browser cache layer (Step 2.5: IndexedDB caching of R2 parquet files) ----
         // Past years are immutable once written, so they're cached forever under a plain
         // filename key. The current year's file changes daily (new EOD row appended), so
@@ -94,7 +313,7 @@
         // changed and R2 files were regenerated). Every visitor's IndexedDB cache - past
         // years included - is transparently invalidated and re-downloaded fresh exactly
         // once, without needing anyone to manually clear browser storage on their phone.
-        const CACHE_VERSION = 'v5'; // fresh reset - forces every visitor to re-pull clean data once
+        const CACHE_VERSION = 'v6'; // corporate-action adjustment fix - forces re-pull of corrected parquet data
         const CACHE_DB_NAME = 'nse-parquet-cache';
         const CACHE_STORE = 'files';
         const CURRENT_YEAR = new Date().getFullYear();
@@ -392,8 +611,10 @@
                         <button class="btn-sma" id="btn-sma-${tabId}">SMA 20</button>
                         <button class="btn-ema" id="btn-ema-${tabId}">EMA 50</button>
                         <button class="btn-bb" id="btn-bb-${tabId}">BB 20,2</button>
+                        <button class="btn-draw" id="btn-draw-trendline-${tabId}" title="Trend Line">/ Line</button>
                     </div>
                     <div class="ohlc-legend" id="legend-${tabId}"></div>
+                    <svg class="drawing-overlay" id="drawing-svg-${tabId}"></svg>
                 </div>
                 <div class="pane-lower" id="lower-${tabId}">
                     <div class="pane-controls">
@@ -423,6 +644,7 @@
             // what the charts actually measure, instead of a stale zero size.
             void contentEl.offsetHeight;
 
+            document.getElementById(`style-${tabId}`).value = appSettings.defaultChartType;
             document.getElementById(`style-${tabId}`).onchange = (e) => changeChartStyle(tabId, e.target.value);
             document.getElementById(`btn-sma-${tabId}`).onclick = () => toggleOverlay(tabId, 'sma');
             document.getElementById(`btn-ema-${tabId}`).onclick = () => toggleOverlay(tabId, 'ema');
@@ -430,31 +652,52 @@
             document.getElementById(`btn-vol-${tabId}`).onclick = () => setLowerIndicator(tabId, 'volume');
             document.getElementById(`btn-rsi-${tabId}`).onclick = () => setLowerIndicator(tabId, 'rsi');
 
+            const priceFormat = {
+                type: 'price',
+                precision: Number(appSettings.decimals),
+                minMove: 1 / Math.pow(10, Number(appSettings.decimals))
+            };
+
+            const chartColors = getChartColors();
+
             const upperChart = LightweightCharts.createChart(document.getElementById(`upper-${tabId}`), {
-                layout: { backgroundColor: '#0e1118', textColor: '#d1d4dc' },
-                grid: { vertLines: { color: '#1c202e' }, horzLines: { color: '#1c202e' } },
-                rightPriceScale: { borderColor: '#232736' },
-                timeScale: { borderColor: '#232736', visible: false }
+                layout: { backgroundColor: chartColors.background, textColor: chartColors.text },
+                grid: { vertLines: { color: chartColors.grid }, horzLines: { color: chartColors.grid } },
+                rightPriceScale: { borderColor: chartColors.border },
+                timeScale: { borderColor: chartColors.border, visible: false }
             });
 
             const lowerChart = LightweightCharts.createChart(document.getElementById(`lower-${tabId}`), {
-                layout: { backgroundColor: '#0e1118', textColor: '#d1d4dc' },
-                grid: { vertLines: { color: '#1c202e' }, horzLines: { color: '#1c202e' } },
-                rightPriceScale: { borderColor: '#232736' },
-                timeScale: { borderColor: '#232736', visible: true }
+                layout: { backgroundColor: chartColors.background, textColor: chartColors.text },
+                grid: { vertLines: { color: chartColors.grid }, horzLines: { color: chartColors.grid } },
+                rightPriceScale: { borderColor: chartColors.border },
+                timeScale: { borderColor: chartColors.border, visible: true }
             });
 
             // Note: subscribeVisibleTimeRangeChange is the correct subscribe method name,
             // but the corresponding setter on the *other* chart is setVisibleRange - there
             // is no setVisibleTimeRange method in lightweight-charts v4's API.
-            upperChart.timeScale().subscribeVisibleTimeRangeChange(r => { if (r) lowerChart.timeScale().setVisibleRange(r); });
+            upperChart.timeScale().subscribeVisibleTimeRangeChange(r => {
+                if (r) lowerChart.timeScale().setVisibleRange(r);
+                renderDrawings(tabId); // panning/zooming moves pixel positions - redraw
+            });
             lowerChart.timeScale().subscribeVisibleTimeRangeChange(r => { if (r) upperChart.timeScale().setVisibleRange(r); });
 
-            const mainSeries = upperChart.addCandlestickSeries({
-                upColor: '#26a69a', downColor: '#ef5350',
-                borderUpColor: '#26a69a', borderDownColor: '#ef5350',
-                wickUpColor: '#26a69a', wickDownColor: '#ef5350'
-            });
+            // Build the initial price series matching the user's default chart type
+            // setting directly, rather than always creating candles then switching -
+            // avoids a wasteful create/remove churn on every single new tab.
+            let mainSeries = null;
+            let lineSeries = null;
+            if (appSettings.defaultChartType === 'line') {
+                lineSeries = upperChart.addLineSeries({ color: '#2962ff', lineWidth: 2, priceFormat });
+            } else {
+                mainSeries = upperChart.addCandlestickSeries({
+                    upColor: '#26a69a', downColor: '#ef5350',
+                    borderUpColor: '#26a69a', borderDownColor: '#ef5350',
+                    wickUpColor: '#26a69a', wickDownColor: '#ef5350',
+                    priceFormat
+                });
+            }
 
             const volumeSeries = lowerChart.addHistogramSeries({
                 priceFormat: { type: 'volume' }
@@ -462,12 +705,20 @@
 
             tabs[tabId] = {
                 symbol: targetSymbol,
-                chartStyle: 'candles',
+                chartStyle: appSettings.defaultChartType,
                 upperChart, lowerChart,
                 mainSeries, volumeSeries,
-                lineSeries: null, rsiSeries: null,
+                lineSeries, rsiSeries: null,
                 data: [],
-                overlays: { sma: null, ema: null, bbUpper: null, bbLower: null }
+                overlays: { sma: null, ema: null, bbUpper: null, bbLower: null },
+                // Phase 3 Group B: drawing tools. drawMode is null (off) or a tool
+                // name ('trendline'). pendingPoint holds the first tap while a
+                // two-point tool is mid-draw. selectedDrawingId tracks which drawn
+                // object is currently selected (for the delete button).
+                drawings: [],
+                drawMode: null,
+                pendingPoint: null,
+                selectedDrawingId: null
             };
 
             // Live OHLC legend that follows the crosshair/finger across the chart -
@@ -488,15 +739,70 @@
                 const cls = point.close >= point.open ? 'up' : 'down';
                 legend.style.display = 'block';
                 legend.innerHTML =
-                    `<b>${t.symbol}</b> &nbsp;O <span class="${cls}">${point.open.toFixed(2)}</span>` +
-                    ` &nbsp;H <span class="${cls}">${point.high.toFixed(2)}</span>` +
-                    ` &nbsp;L <span class="${cls}">${point.low.toFixed(2)}</span>` +
-                    ` &nbsp;C <span class="${cls}">${point.close.toFixed(2)}</span>` +
-                    ` &nbsp;Vol <span class="${cls}">${point.volume.toLocaleString('en-IN')}</span>`;
+                    `<b>${t.symbol}</b> &nbsp;O <span class="${cls}">${formatPrice(point.open)}</span>` +
+                    ` &nbsp;H <span class="${cls}">${formatPrice(point.high)}</span>` +
+                    ` &nbsp;L <span class="${cls}">${formatPrice(point.low)}</span>` +
+                    ` &nbsp;C <span class="${cls}">${formatPrice(point.close)}</span>` +
+                    ` &nbsp;Vol <span class="${cls}">${formatVolume(point.volume)}</span>`;
+            });
+
+            // Drawing tool click handling. chart.subscribeClick gives us both the
+            // time (directly) and pixel point (for price conversion) in one place -
+            // cleaner than manually converting from raw DOM click coordinates.
+            upperChart.subscribeClick(param => {
+                const t = tabs[tabId];
+                if (!t || !param.point || !param.time) return;
+
+                if (t.drawMode === 'trendline') {
+                    const price = t.mainSeries
+                        ? t.mainSeries.coordinateToPrice(param.point.y)
+                        : t.lineSeries.coordinateToPrice(param.point.y);
+                    if (price === null) return;
+                    const point = { time: param.time, price };
+
+                    if (!t.pendingPoint) {
+                        t.pendingPoint = point;
+                    } else {
+                        t.drawings.push({
+                            id: `draw-${Date.now()}`,
+                            type: 'trendline',
+                            p1: t.pendingPoint,
+                            p2: point
+                        });
+                        t.pendingPoint = null;
+                        t.drawMode = null;
+                        const btn = document.getElementById(`btn-draw-trendline-${tabId}`);
+                        if (btn) btn.classList.remove('tool-active');
+                        renderDrawings(tabId);
+                    }
+                }
+            });
+
+            document.getElementById(`btn-draw-trendline-${tabId}`).addEventListener('click', () => {
+                const t = tabs[tabId];
+                const btn = document.getElementById(`btn-draw-trendline-${tabId}`);
+                if (t.drawMode === 'trendline') {
+                    t.drawMode = null;
+                    t.pendingPoint = null;
+                    btn.classList.remove('tool-active');
+                } else {
+                    t.drawMode = 'trendline';
+                    t.pendingPoint = null;
+                    btn.classList.add('tool-active');
+                }
             });
 
             switchTab(tabId);
-            loadDataForTab(tabId, targetSymbol);
+            loadDataForTab(tabId, targetSymbol).then(() => {
+                // Auto-apply settings-driven defaults now that real data exists -
+                // deliberately done AFTER load, not before, since toggling these
+                // early would just compute indicators against an empty data set.
+                if (appSettings.autoSMA) toggleOverlay(tabId, 'sma');
+                if (appSettings.autoEMA) toggleOverlay(tabId, 'ema');
+                if (appSettings.autoBB) toggleOverlay(tabId, 'bb');
+                if (appSettings.defaultLower === 'rsi') setLowerIndicator(tabId, 'rsi');
+                renderDrawings(tabId);
+            });
         }
 
         function switchTab(tabId) {
@@ -720,6 +1026,70 @@
             }
         }
 
+        // Phase 3 Group B: renders every drawing object as SVG elements positioned
+        // via the chart's own time/price -> pixel coordinate conversion. Called on
+        // initial load, after adding/removing a drawing, and whenever the visible
+        // time range or container size changes (pan/zoom/resize all shift pixel
+        // positions even though the underlying time/price anchors don't move).
+        function renderDrawings(tabId) {
+            const tab = tabs[tabId];
+            const svg = document.getElementById(`drawing-svg-${tabId}`);
+            if (!tab || !svg) return;
+
+            svg.innerHTML = '';
+            const priceSeries = tab.mainSeries || tab.lineSeries;
+            if (!priceSeries) return;
+
+            tab.drawings.forEach(d => {
+                if (d.type !== 'trendline') return;
+                const x1 = tab.upperChart.timeScale().timeToCoordinate(d.p1.time);
+                const y1 = priceSeries.priceToCoordinate(d.p1.price);
+                const x2 = tab.upperChart.timeScale().timeToCoordinate(d.p2.time);
+                const y2 = priceSeries.priceToCoordinate(d.p2.price);
+                if (x1 === null || y1 === null || x2 === null || y2 === null) return;
+
+                const isSelected = tab.selectedDrawingId === d.id;
+                const ns = 'http://www.w3.org/2000/svg';
+
+                // A wide, invisible line sits under the visible one purely to make
+                // the line easy to tap on a touchscreen (the visible line itself is
+                // only 2px wide - far too thin to reliably tap with a finger).
+                const hitLine = document.createElementNS(ns, 'line');
+                hitLine.setAttribute('x1', x1); hitLine.setAttribute('y1', y1);
+                hitLine.setAttribute('x2', x2); hitLine.setAttribute('y2', y2);
+                hitLine.setAttribute('class', 'draw-line-hit');
+                hitLine.addEventListener('click', () => {
+                    tab.selectedDrawingId = (tab.selectedDrawingId === d.id) ? null : d.id;
+                    renderDrawings(tabId);
+                });
+                svg.appendChild(hitLine);
+
+                const line = document.createElementNS(ns, 'line');
+                line.setAttribute('x1', x1); line.setAttribute('y1', y1);
+                line.setAttribute('x2', x2); line.setAttribute('y2', y2);
+                line.setAttribute('class', 'draw-line' + (isSelected ? ' selected' : ''));
+                svg.appendChild(line);
+
+                if (isSelected) {
+                    const midX = (x1 + x2) / 2, midY = (y1 + y2) / 2;
+                    const g = document.createElementNS(ns, 'g');
+                    g.setAttribute('class', 'draw-delete-btn');
+                    g.addEventListener('click', () => {
+                        tab.drawings = tab.drawings.filter(dr => dr.id !== d.id);
+                        tab.selectedDrawingId = null;
+                        renderDrawings(tabId);
+                    });
+                    const circle = document.createElementNS(ns, 'circle');
+                    circle.setAttribute('cx', midX); circle.setAttribute('cy', midY); circle.setAttribute('r', 10);
+                    const text = document.createElementNS(ns, 'text');
+                    text.setAttribute('x', midX); text.setAttribute('y', midY);
+                    text.textContent = '\u00d7';
+                    g.appendChild(circle); g.appendChild(text);
+                    svg.appendChild(g);
+                }
+            });
+        }
+
         function refreshOverlays(tabId) {
             const tab = tabs[tabId];
             if (tab.overlays.sma) tab.overlays.sma.setData(calculateSMA(tab.data, 20));
@@ -750,6 +1120,7 @@
                 if (upperEl && lowerEl) {
                     tab.upperChart.applyOptions({ width: upperEl.clientWidth, height: upperEl.clientHeight });
                     tab.lowerChart.applyOptions({ width: lowerEl.clientWidth, height: lowerEl.clientHeight });
+                    renderDrawings(tabId); // resize shifts pixel positions - keep drawings anchored
                 }
             });
         });
