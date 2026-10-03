@@ -1,0 +1,102 @@
+================================================================================
+  MASTER ARCHITECTURE & PHASE 2 EXECUTION ROADMAP
+  NSE Stock Analysis Web App (AmiBroker Style) | 100% Free-Tier Stack
+================================================================================
+
+1. PROJECT GOAL
+--------------------------------------------------------------------------------
+Build a fast, free-tier web app analyzing ~2,700 NSE symbols with daily price 
+data from 2000 to present (~17.5M rows) without hitting server memory limits 
+or database costs.
+
+2. CORE ARCHITECTURE
+--------------------------------------------------------------------------------
+• STORAGE (Cloudflare R2): 
+  - Historical market data organized into 27 yearly compressed Parquet files 
+    (2000.parquet through 2026.parquet) totaling ~150–200 MB.
+  - Fits comfortably within R2 free limits: 10 GB storage, 1M Class A (writes), 
+    and 10M Class B (reads) operations/month with $0 egress fees.
+
+• HOSTING (Render Free Tier):
+  - Serves as a lightweight web server and static host.
+  - Bypasses Render's 512 MB RAM limit and ephemeral disk wipe issues because 
+    all historical price data resides in Cloudflare R2 and browser memory.
+
+• COMPUTE ENGINE (Browser Client):
+  - Downloads Parquet files as ArrayBuffers into browser memory.
+  - Queries data, calculates technical indicators (SMA, EMA, RSI, MACD, Bollinger 
+    Bands), and executes backtests locally using DuckDB-WASM and JavaScript.
+
+• CACHING LAYER (Browser IndexedDB / CacheStorage):
+  - Past historical years (2000–2025) are static and cached permanently in 
+    the user's browser IndexedDB after the first load.
+  - Current year (2026.parquet) is cache-busted daily after market close.
+  - Repeat backtests run with 0 R2 read operations.
+
+================================================================================
+3. DETAILED ROADMAP BY PHASE
+================================================================================
+
+[ PHASE 1: ARCHITECTURE & FEASIBILITY ] - ✅ COMPLETED
+  • Finalized multi-cloud free tier strategy (R2 + Render + DuckDB-WASM).
+  • Evaluated storage, read/write quotas, and browser caching limits.
+  • Decided on Yearly Parquet File partitioning (2000–2026) for optimal backtest 
+    performance and minimal network requests.
+
+--------------------------------------------------------------------------------
+
+[ PHASE 2: DATA PIPELINE & STORAGE SETUP ] - 🔄 IN PROGRESS
+  • Step 2.1: Cloudflare R2 Bucket Setup
+    - Create public R2 bucket (`nse-stock-data`).
+    - Enable R2 Dev Domain or custom public domain.
+    - Generate S3-compatible API Access Credentials (Key ID, Secret, Endpoint).
+
+  • Step 2.2: Python Historical Ingestion Script (2000–2026)
+    - Run local Python script (`yfinance` / local source + `pandas` + `pyarrow` + `boto3`).
+    - Fetch history for all ~2,700 NSE symbols.
+    - Group all stock data year-by-year into 27 files (`2000.parquet` to `2026.parquet`).
+    - Upload all 27 yearly files directly to Cloudflare R2.
+
+  • Step 2.3: Daily EOD Automation Script
+    - Automate daily EOD script to fetch market close data.
+    - Append today's candle to `2026.parquet` and overwrite on Cloudflare R2 
+      (1 Class A write request per day = ~22 writes/month).
+
+  • Step 2.4: DuckDB-WASM Frontend Integration
+    - Initialize DuckDB-WASM in browser JS application on Render host.
+    - Fetch yearly Parquet files as `ArrayBuffer` over HTTP.
+    - Register buffers into DuckDB-WASM virtual filesystem (`registerFileBuffer`).
+
+  • Step 2.5: Browser IndexedDB Caching Engine
+    - Implement `CacheStorage` / `IndexedDB` layer in frontend JavaScript.
+    - Automatically store downloaded immutable year files (2000–2025) locally.
+    - Intercept file requests: serve from local cache if found, fetch from R2 if missing.
+
+--------------------------------------------------------------------------------
+
+[ PHASE 3: AMIBROKER UI & CHARTE ENGINE ] - ⏳ UPCOMING
+  • Build AmiBroker-style multi-pane workspace layout (Stock Selector, Chart Area, Control Panel).
+  • Integrate high-performance Canvas / Lightweight-Charts plotting engine.
+  • Implement client-side Technical Indicator calculation library:
+    - Moving Averages (SMA, EMA, WMA).
+    - Oscillators (RSI, MACD, Stochastic).
+    - Bands & Channels (Bollinger Bands, ATR, Keltner Channels).
+  • Add chart interactions (drawing tools, trendlines, zoom/pan, crosshair sync).
+
+--------------------------------------------------------------------------------
+
+[ PHASE 4: BROWSER BACKTESTING & STRATEGY ENGINE ] - ⏳ UPCOMING
+  • Develop custom AFL-style (AmiBroker Formula Language) signal parser in JS/WASM.
+  • Implement portfolio backtester (Buy/Sell signals, position sizing, stop-loss/take-profit rules).
+  • Generate strategy performance analytics:
+    - Equity Curve, Max Drawdown, CAGR, Sharpe Ratio, Win/Loss Ratio.
+  • Build trade log display with individual trade entries and exits.
+
+================================================================================
+4. CURRENT ACTIVE STEP
+================================================================================
+Currently executing Step 2.1 / Step 2.2 of Phase 2:
+  1. Creating Cloudflare R2 Bucket & generating API keys.
+  2. Running the Python ingestion script to generate and upload the 27 yearly 
+     Parquet files (`2000.parquet` to `2026.parquet`).
+================================================================================
