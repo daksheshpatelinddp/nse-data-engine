@@ -85,8 +85,7 @@
 
     <header>
         <div class="logo">AmiBroker</div>
-        <select id="symbolSelect"><option value="">Initializing DuckDB...</option></select>
-        <button id="loadBtn">Load Symbol</button>
+        <button id="symbolBrowserBtn">&#128193; Symbols</button>
         <button id="settingsBtn" title="Settings" style="font-size:1rem; padding:5px 9px;">&#9881;</button>
         <div id="statusBadge" class="status-badge status-online">Connecting R2...</div>
     </header>
@@ -158,6 +157,123 @@
             <div id="settingsSavedMsg" style="display:none; text-align:center; color:#26a69a; font-size:0.8rem; margin-top:8px;">Saved - applies to new/reopened charts</div>
         </div>
     </div>
+
+    <!-- Symbol Browser: ALL symbols + user-defined Watchlists + Market/Sector/
+         Industry categories (Phase 3 Part F). Tapping a symbol loads it into
+         the active tab; the small "+" opens it in a new tab instead. -->
+    <div id="symbolBrowserOverlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:100;">
+        <div id="symbolBrowserPanel" style="position:absolute; top:0; left:0; bottom:0; width:min(380px, 92vw); background:var(--bg-panel); border-right:1px solid var(--border); display:flex; flex-direction:column;">
+            <div style="display:flex; justify-content:space-between; align-items:center; padding:14px 16px 8px;">
+                <h2 style="font-size:1.05rem;">Symbols</h2>
+                <button id="closeSymbolBrowserBtn" style="padding:4px 10px;">&times;</button>
+            </div>
+
+            <div style="padding:0 16px 10px;">
+                <input type="text" id="symbolSearchInput" placeholder="Search symbols..." style="width:100%; background:var(--bg-input); color:var(--text-bright); border:1px solid var(--border); border-radius:4px; padding:7px 10px; font-size:0.85rem;">
+            </div>
+
+            <div style="flex:1; overflow-y:auto; padding:0 8px 16px;">
+
+                <!-- Search results (shown only while searching) -->
+                <div id="searchResultsSection" style="display:none; margin-bottom:10px;">
+                    <div style="font-size:0.72rem; color:#868a9c; padding:6px 8px; text-transform:uppercase;">Search results</div>
+                    <div id="searchResultsList"></div>
+                </div>
+
+                <!-- ALL -->
+                <div id="allSymbolsSection">
+                    <div class="browser-section-header" data-target="allSymbolsList" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center; padding:8px; font-size:0.82rem; font-weight:600; background:var(--bg-input); border-radius:4px; margin-bottom:4px;">
+                        <span>&#9654; ALL <span id="allSymbolsCount" style="color:#868a9c; font-weight:400;"></span></span>
+                    </div>
+                    <div id="allSymbolsList" style="display:none; max-height:260px; overflow-y:auto;"></div>
+                </div>
+
+                <!-- Watchlists -->
+                <div style="margin-top:14px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; padding:4px 8px;">
+                        <span style="font-size:0.72rem; color:#868a9c; text-transform:uppercase;">Watchlists</span>
+                        <div>
+                            <button id="importWatchlistBtn" title="Import from .txt/.tls" style="padding:3px 8px; font-size:0.75rem;">Import</button>
+                            <button id="newWatchlistBtn" title="New watchlist" style="padding:3px 8px; font-size:0.75rem;">+ New</button>
+                        </div>
+                    </div>
+                    <div id="watchlistsContainer"></div>
+                </div>
+
+                <!-- Markets (exclusive category - Part F.1) -->
+                <div style="margin-top:14px;">
+                    <div style="font-size:0.72rem; color:#868a9c; text-transform:uppercase; padding:4px 8px;">Markets</div>
+                    <div id="marketsContainer"></div>
+                </div>
+
+                <!-- Groups (exclusive category) -->
+                <div style="margin-top:14px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; padding:4px 8px;">
+                        <span style="font-size:0.72rem; color:#868a9c; text-transform:uppercase;">Groups</span>
+                        <button id="newGroupBtn" title="New group" style="padding:3px 8px; font-size:0.75rem;">+ New</button>
+                    </div>
+                    <div id="groupsContainer"></div>
+                </div>
+
+                <!-- Sectors (exclusive category, with nested Industries) -->
+                <div style="margin-top:14px;">
+                    <div style="display:flex; justify-content:space-between; align-items:center; padding:4px 8px;">
+                        <span style="font-size:0.72rem; color:#868a9c; text-transform:uppercase;">Sectors &amp; Industries</span>
+                        <div>
+                            <button id="newIndustryBtn" title="New industry" style="padding:3px 8px; font-size:0.75rem;">+ Industry</button>
+                            <button id="newSectorBtn" title="New sector" style="padding:3px 8px; font-size:0.75rem;">+ Sector</button>
+                        </div>
+                    </div>
+                    <div id="sectorsContainer"></div>
+                </div>
+
+                <!-- Category Manager entry point (bulk assignment) -->
+                <div style="margin-top:14px; padding:0 8px;">
+                    <button id="openCategoryManagerBtn" style="width:100%; padding:8px; font-size:0.82rem;">Category Manager (assign symbols)</button>
+                </div>
+
+            </div>
+        </div>
+    </div>
+    <input type="file" id="watchlistImportFile" accept=".txt,.tls,.csv" style="display:none;">
+
+    <!-- Category Manager: bulk-assign many symbols to a Group/Sector/Industry/Market
+         at once - matches AmiBroker's "Organize Assignments" dialog. -->
+    <div id="categoryManagerOverlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:110; align-items:center; justify-content:center;">
+        <div style="background:var(--bg-panel); border:1px solid var(--border); border-radius:8px; width:min(420px, 92vw); max-height:85vh; overflow-y:auto; padding:16px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                <h2 style="font-size:1.0rem;">Category Manager</h2>
+                <button id="closeCategoryManagerBtn" style="padding:4px 10px;">&times;</button>
+            </div>
+            <p style="font-size:0.78rem; color:#868a9c; margin-bottom:10px;">
+                Assign many symbols to a Group, Sector, Industry, or Market at once.
+                Each symbol keeps exactly one value per category type - assigning here
+                moves it, it doesn't add a duplicate.
+            </p>
+
+            <label style="font-size:0.78rem; display:block; margin-bottom:3px;">Category type</label>
+            <select id="catMgrType" style="width:100%; margin-bottom:10px; padding:6px; background:var(--bg-input); color:var(--text-bright); border:1px solid var(--border); border-radius:4px;">
+                <option value="group">Group</option>
+                <option value="sector">Sector</option>
+                <option value="industry">Industry</option>
+                <option value="market">Market</option>
+            </select>
+
+            <label style="font-size:0.78rem; display:block; margin-bottom:3px;">Assign to</label>
+            <select id="catMgrValue" style="width:100%; margin-bottom:10px; padding:6px; background:var(--bg-input); color:var(--text-bright); border:1px solid var(--border); border-radius:4px;">
+            </select>
+
+            <label style="font-size:0.78rem; display:block; margin-bottom:3px;">Symbols (one per line, or paste a comma-separated list)</label>
+            <textarea id="catMgrSymbols" rows="6" style="width:100%; margin-bottom:10px; padding:6px; background:var(--bg-input); color:var(--text-bright); border:1px solid var(--border); border-radius:4px; font-family:monospace; font-size:0.8rem;" placeholder="RELIANCE&#10;TCS&#10;HDFCBANK"></textarea>
+
+            <div style="display:flex; gap:8px;">
+                <button id="catMgrImportFileBtn" style="flex:1; padding:8px; font-size:0.8rem;">Import .txt/.tls</button>
+                <button id="catMgrAssignBtn" style="flex:1; padding:8px; font-size:0.8rem; background:var(--accent); color:#fff;">Assign</button>
+            </div>
+            <div id="catMgrStatus" style="font-size:0.78rem; margin-top:8px; color:#868a9c;"></div>
+        </div>
+    </div>
+    <input type="file" id="catMgrImportFile" accept=".txt,.tls,.csv" style="display:none;">
 
     <div class="tabs-bar" id="tabsBar">
         <button class="add-tab-btn" id="addTabBtn" title="New AmiBroker Tab">+</button>
@@ -302,6 +418,254 @@
             });
         }
 
+        // ====================================================================
+        // CATEGORY / WATCHLIST DATA LAYER (Phase 3, Part F)
+        // Modeled directly on AmiBroker's real system: Watchlists are
+        // free-membership (a symbol can belong to any number at once);
+        // Market/Group/Sector/Industry are exclusive-membership (a symbol
+        // belongs to exactly one at a time). Stored in its own IndexedDB
+        // database - deliberately separate from the parquet byte cache,
+        // since this is small, structured, user-authored data rather than
+        // large cached blobs.
+        // ====================================================================
+        const CATDB_NAME = 'nse-categories';
+        const CATDB_VERSION = 2; // bumped: added catDefs store for Group/Sector/Industry definitions
+        const CATDB_STORE_WATCHLISTS = 'watchlists';   // key: name -> {name, symbols: []}
+        const CATDB_STORE_SYMBOLMETA = 'symbolMeta';   // key: symbol -> {market, group, sector, industry}
+        // Exclusive-membership category DEFINITIONS (the names themselves, independent
+        // of which symbols are assigned) - matches AmiBroker's Symbol->Categories dialog,
+        // where you define Group/Sector/Industry names before assigning symbols to them.
+        // id is a composite "type::name" string (e.g. "group::Nifty 50"). For industry
+        // records, `sector` holds the parent sector name (industries belong to a sector,
+        // same parent-child relationship as AmiBroker: assigning a symbol to an industry
+        // auto-implies its sector - see setSymbolCategory).
+        const CATDB_STORE_CATDEFS = 'catDefs';
+
+        function openCategoryDB() {
+            return new Promise((resolve, reject) => {
+                const req = indexedDB.open(CATDB_NAME, CATDB_VERSION);
+                req.onupgradeneeded = () => {
+                    const d = req.result;
+                    if (!d.objectStoreNames.contains(CATDB_STORE_WATCHLISTS)) {
+                        d.createObjectStore(CATDB_STORE_WATCHLISTS, { keyPath: 'name' });
+                    }
+                    if (!d.objectStoreNames.contains(CATDB_STORE_SYMBOLMETA)) {
+                        d.createObjectStore(CATDB_STORE_SYMBOLMETA, { keyPath: 'symbol' });
+                    }
+                    if (!d.objectStoreNames.contains(CATDB_STORE_CATDEFS)) {
+                        d.createObjectStore(CATDB_STORE_CATDEFS, { keyPath: 'id' });
+                    }
+                };
+                req.onsuccess = () => resolve(req.result);
+                req.onerror = () => reject(req.error);
+            });
+        }
+
+        async function catGetAll(storeName) {
+            try {
+                const d = await openCategoryDB();
+                return await new Promise((resolve, reject) => {
+                    const tx = d.transaction(storeName, 'readonly');
+                    const req = tx.objectStore(storeName).getAll();
+                    req.onsuccess = () => resolve(req.result || []);
+                    req.onerror = () => reject(req.error);
+                });
+            } catch (e) {
+                console.warn(`Category DB read failed (${storeName}):`, e);
+                return [];
+            }
+        }
+
+        async function catPut(storeName, value) {
+            try {
+                const d = await openCategoryDB();
+                await new Promise((resolve, reject) => {
+                    const tx = d.transaction(storeName, 'readwrite');
+                    tx.objectStore(storeName).put(value);
+                    tx.oncomplete = () => resolve();
+                    tx.onerror = () => reject(tx.error);
+                });
+            } catch (e) {
+                console.warn(`Category DB write failed (${storeName}):`, e);
+            }
+        }
+
+        async function catDelete(storeName, key) {
+            try {
+                const d = await openCategoryDB();
+                await new Promise((resolve, reject) => {
+                    const tx = d.transaction(storeName, 'readwrite');
+                    tx.objectStore(storeName).delete(key);
+                    tx.oncomplete = () => resolve();
+                    tx.onerror = () => reject(tx.error);
+                });
+            } catch (e) {
+                console.warn(`Category DB delete failed (${storeName}):`, e);
+            }
+        }
+
+        async function getWatchlists() {
+            const lists = await catGetAll(CATDB_STORE_WATCHLISTS);
+            return lists.sort((a, b) => a.name.localeCompare(b.name));
+        }
+
+        async function createWatchlist(name) {
+            name = name.trim();
+            if (!name) return false;
+            const existing = await catGetAll(CATDB_STORE_WATCHLISTS);
+            if (existing.some(w => w.name === name)) return false; // already exists
+            await catPut(CATDB_STORE_WATCHLISTS, { name, symbols: [] });
+            return true;
+        }
+
+        async function renameWatchlist(oldName, newName) {
+            newName = newName.trim();
+            if (!newName || oldName === newName) return false;
+            const lists = await catGetAll(CATDB_STORE_WATCHLISTS);
+            const wl = lists.find(w => w.name === oldName);
+            if (!wl || lists.some(w => w.name === newName)) return false;
+            await catPut(CATDB_STORE_WATCHLISTS, { name: newName, symbols: wl.symbols });
+            await catDelete(CATDB_STORE_WATCHLISTS, oldName);
+            return true;
+        }
+
+        async function deleteWatchlist(name) {
+            await catDelete(CATDB_STORE_WATCHLISTS, name);
+        }
+
+        async function addSymbolsToWatchlist(name, symbols) {
+            const lists = await catGetAll(CATDB_STORE_WATCHLISTS);
+            const wl = lists.find(w => w.name === name);
+            if (!wl) return;
+            // Preserve insertion order, skip duplicates - matches AmiBroker's
+            // "watchlists remember the order symbols were added" behavior.
+            const existingSet = new Set(wl.symbols);
+            for (const s of symbols) {
+                if (!existingSet.has(s)) {
+                    wl.symbols.push(s);
+                    existingSet.add(s);
+                }
+            }
+            await catPut(CATDB_STORE_WATCHLISTS, wl);
+        }
+
+        async function removeSymbolFromWatchlist(name, symbol) {
+            const lists = await catGetAll(CATDB_STORE_WATCHLISTS);
+            const wl = lists.find(w => w.name === name);
+            if (!wl) return;
+            wl.symbols = wl.symbols.filter(s => s !== symbol);
+            await catPut(CATDB_STORE_WATCHLISTS, wl);
+        }
+
+        // Parses AmiBroker's real .TLS/.txt watchlist format: one ticker
+        // symbol per line, no other fields. Tolerant of blank lines, stray
+        // whitespace, and a trailing newline.
+        function parseSymbolListText(text) {
+            return text.split(/\r?\n/).map(s => s.trim()).filter(s => s.length > 0);
+        }
+
+        // ---- Exclusive-membership categories: Group / Sector / Industry / Market ----
+        // Unlike watchlists (free membership - a symbol can be in many), these follow
+        // AmiBroker's exclusive model: a symbol has exactly ONE group, ONE sector, ONE
+        // industry, ONE market at a time. "Unassigned" (no value set) is the implicit
+        // default rather than a category you create - matching AmiBroker's own
+        // recommendation to make an explicit "Unassigned" bucket only if you want one.
+
+        async function getCategoryDefs(type) {
+            const all = await catGetAll(CATDB_STORE_CATDEFS);
+            return all.filter(d => d.type === type).sort((a, b) => a.name.localeCompare(b.name));
+        }
+
+        async function createCategoryDef(type, name, parentSector) {
+            name = name.trim();
+            if (!name) return false;
+            const id = `${type}::${name}`;
+            const existing = await catGetAll(CATDB_STORE_CATDEFS);
+            if (existing.some(d => d.id === id)) return false; // already exists
+            const record = { id, type, name };
+            if (type === 'industry') record.sector = parentSector || null;
+            await catPut(CATDB_STORE_CATDEFS, record);
+            return true;
+        }
+
+        async function renameCategoryDef(type, oldName, newName) {
+            newName = newName.trim();
+            if (!newName || oldName === newName) return false;
+            const oldId = `${type}::${oldName}`;
+            const newId = `${type}::${newName}`;
+            const all = await catGetAll(CATDB_STORE_CATDEFS);
+            const def = all.find(d => d.id === oldId);
+            if (!def || all.some(d => d.id === newId)) return false;
+            await catPut(CATDB_STORE_CATDEFS, { ...def, id: newId, name: newName });
+            await catDelete(CATDB_STORE_CATDEFS, oldId);
+            // Every symbol currently assigned to the old name must follow the rename -
+            // otherwise they'd silently become "unassigned" the moment this runs.
+            const allMeta = await catGetAll(CATDB_STORE_SYMBOLMETA);
+            for (const meta of allMeta) {
+                if (meta[type] === oldName) {
+                    meta[type] = newName;
+                    await catPut(CATDB_STORE_SYMBOLMETA, meta);
+                }
+            }
+            // If renaming a sector, every industry that pointed at the old sector name
+            // needs updating too (industries store their parent sector by name).
+            if (type === 'sector') {
+                const industries = await getCategoryDefs('industry');
+                for (const ind of industries) {
+                    if (ind.sector === oldName) {
+                        await catPut(CATDB_STORE_CATDEFS, { ...ind, sector: newName });
+                    }
+                }
+            }
+            return true;
+        }
+
+        async function deleteCategoryDef(type, name) {
+            await catDelete(CATDB_STORE_CATDEFS, `${type}::${name}`);
+            // Symbols assigned to the deleted category revert to unassigned (field
+            // cleared), rather than being left pointing at a category that no longer
+            // exists - matches AmiBroker's requirement to explicitly move symbols
+            // rather than leave a dangling assignment.
+            const allMeta = await catGetAll(CATDB_STORE_SYMBOLMETA);
+            for (const meta of allMeta) {
+                if (meta[type] === name) {
+                    meta[type] = null;
+                    await catPut(CATDB_STORE_SYMBOLMETA, meta);
+                }
+            }
+        }
+
+        async function getSymbolMeta(symbol) {
+            const all = await catGetAll(CATDB_STORE_SYMBOLMETA);
+            return all.find(m => m.symbol === symbol) || { symbol, market: 'NSE', group: null, sector: null, industry: null };
+        }
+
+        async function setSymbolCategory(symbol, field, value) {
+            const all = await catGetAll(CATDB_STORE_SYMBOLMETA);
+            let meta = all.find(m => m.symbol === symbol);
+            if (!meta) meta = { symbol, market: 'NSE', group: null, sector: null, industry: null };
+            meta[field] = value || null;
+            // Assigning a symbol to an industry auto-implies its sector, exactly as
+            // AmiBroker does - the user shouldn't have to set both separately.
+            if (field === 'industry' && value) {
+                const industries = await getCategoryDefs('industry');
+                const ind = industries.find(i => i.name === value);
+                if (ind && ind.sector) meta.sector = ind.sector;
+            }
+            await catPut(CATDB_STORE_SYMBOLMETA, meta);
+        }
+
+        async function bulkSetSymbolCategory(symbols, field, value) {
+            for (const sym of symbols) {
+                await setSymbolCategory(sym, field, value);
+            }
+        }
+
+        async function getSymbolsInCategory(type, name) {
+            const all = await catGetAll(CATDB_STORE_SYMBOLMETA);
+            return all.filter(m => m[type] === name).map(m => m.symbol).sort();
+        }
+
         // ---- Browser cache layer (Step 2.5: IndexedDB caching of R2 parquet files) ----
         // Past years are immutable once written, so they're cached forever under a plain
         // filename key. The current year's file changes daily (new EOD row appended), so
@@ -313,7 +677,7 @@
         // changed and R2 files were regenerated). Every visitor's IndexedDB cache - past
         // years included - is transparently invalidated and re-downloaded fresh exactly
         // once, without needing anyone to manually clear browser storage on their phone.
-        const CACHE_VERSION = 'v10'; // corporate-action adjustment fix - forces re-pull of corrected parquet data
+        const CACHE_VERSION = 'v6'; // corporate-action adjustment fix - forces re-pull of corrected parquet data
         const CACHE_DB_NAME = 'nse-parquet-cache';
         const CACHE_STORE = 'files';
         const CURRENT_YEAR = new Date().getFullYear();
@@ -469,14 +833,9 @@
                     detail.textContent = 'SYMBOL EXTRACTION FAILED - raw first row from query: ' + JSON.stringify(rawRows[0]);
                 }
 
-                const select = document.getElementById('symbolSelect');
-                select.innerHTML = '';
-                availableSymbols.forEach(sym => {
-                    const opt = document.createElement('option');
-                    opt.value = sym;
-                    opt.textContent = sym;
-                    select.appendChild(opt);
-                });
+                // availableSymbols now feeds the Symbol Browser panel (ALL /
+                // Watchlists / Markets sections) instead of a plain dropdown -
+                // rendered on-demand when the browser is opened, not here.
 
                 document.getElementById('statusBadge').textContent = `${availableSymbols.length} Symbols (R2)`;
                 document.getElementById('statusBadge').className = 'status-badge status-online';
@@ -507,6 +866,530 @@
                 detail.textContent = 'R2 READ FAILED: ' + (err && err.message ? err.message : String(err)) + '\n\nFiles attempted:\n' + PARQUET_FILES.join('\n');
             }
         }
+
+        // ====================================================================
+        // SYMBOL BROWSER UI (Phase 3, Part F.2/F.4) - renders ALL/Watchlists/
+        // Markets sections, search, and click-to-open-chart behavior.
+        // ====================================================================
+
+        // Tapping a symbol row loads it into the active tab (same behavior as
+        // the old "Load Symbol" button); the small "+" opens it in a new tab
+        // instead (same behavior as the old tab-bar "+"), then closes the panel.
+        function buildSymbolRow(sym) {
+            const row = document.createElement('div');
+            row.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:6px 10px; font-size:0.82rem; border-radius:3px; cursor:pointer;';
+            row.onmouseenter = () => row.style.background = 'var(--bg-input)';
+            row.onmouseleave = () => row.style.background = 'transparent';
+
+            const label = document.createElement('span');
+            label.textContent = sym;
+            label.style.flex = '1';
+            label.onclick = () => {
+                if (activeTabId) loadDataForTab(activeTabId, sym);
+                else createNewTab(sym);
+                document.getElementById('symbolBrowserOverlay').style.display = 'none';
+            };
+
+            const newTabBtn = document.createElement('button');
+            newTabBtn.textContent = '+';
+            newTabBtn.title = 'Open in new tab';
+            newTabBtn.style.cssText = 'padding:1px 7px; font-size:0.78rem; margin-left:6px;';
+            newTabBtn.onclick = (e) => {
+                e.stopPropagation();
+                createNewTab(sym);
+                document.getElementById('symbolBrowserOverlay').style.display = 'none';
+            };
+
+            row.appendChild(label);
+            row.appendChild(newTabBtn);
+            return row;
+        }
+
+        function renderAllSymbolsSection() {
+            document.getElementById('allSymbolsCount').textContent = `(${availableSymbols.length})`;
+            const list = document.getElementById('allSymbolsList');
+            list.innerHTML = '';
+            // Render lazily (only when expanded) - 2978 DOM rows up front would
+            // be sluggish on mobile; building them only on first expand keeps
+            // the panel snappy to open.
+            availableSymbols.forEach(sym => list.appendChild(buildSymbolRow(sym)));
+        }
+
+        async function renderWatchlistsSection() {
+            const container = document.getElementById('watchlistsContainer');
+            container.innerHTML = '';
+            const lists = await getWatchlists();
+
+            if (lists.length === 0) {
+                const empty = document.createElement('div');
+                empty.textContent = 'No watchlists yet - tap "+ New" to create one.';
+                empty.style.cssText = 'font-size:0.78rem; color:#868a9c; padding:8px;';
+                container.appendChild(empty);
+                return;
+            }
+
+            for (const wl of lists) {
+                const card = document.createElement('div');
+                card.style.marginBottom = '4px';
+
+                const header = document.createElement('div');
+                header.style.cssText = 'cursor:pointer; display:flex; justify-content:space-between; align-items:center; padding:8px; font-size:0.82rem; font-weight:600; background:var(--bg-input); border-radius:4px;';
+
+                const titleSpan = document.createElement('span');
+                titleSpan.textContent = `\u25B6 ${wl.name} (${wl.symbols.length})`;
+                header.appendChild(titleSpan);
+
+                const btnGroup = document.createElement('div');
+                const renameBtn = document.createElement('button');
+                renameBtn.textContent = '\u270E';
+                renameBtn.title = 'Rename';
+                renameBtn.style.cssText = 'padding:1px 6px; font-size:0.72rem; margin-left:4px;';
+                renameBtn.onclick = async (e) => {
+                    e.stopPropagation();
+                    const newName = prompt(`Rename watchlist "${wl.name}" to:`, wl.name);
+                    if (newName && newName.trim() && newName.trim() !== wl.name) {
+                        const ok = await renameWatchlist(wl.name, newName.trim());
+                        if (!ok) alert('A watchlist with that name already exists.');
+                        renderWatchlistsSection();
+                    }
+                };
+                const deleteBtn = document.createElement('button');
+                deleteBtn.textContent = '\u2715';
+                deleteBtn.title = 'Delete watchlist';
+                deleteBtn.style.cssText = 'padding:1px 6px; font-size:0.72rem; margin-left:4px;';
+                deleteBtn.onclick = async (e) => {
+                    e.stopPropagation();
+                    if (confirm(`Delete watchlist "${wl.name}"? This cannot be undone.`)) {
+                        await deleteWatchlist(wl.name);
+                        renderWatchlistsSection();
+                    }
+                };
+                btnGroup.appendChild(renameBtn);
+                btnGroup.appendChild(deleteBtn);
+                header.appendChild(btnGroup);
+
+                const body = document.createElement('div');
+                body.style.cssText = 'display:none; max-height:220px; overflow-y:auto; padding-left:4px;';
+
+                header.onclick = () => {
+                    const open = body.style.display !== 'none';
+                    body.style.display = open ? 'none' : 'block';
+                    titleSpan.textContent = `${open ? '\u25B6' : '\u25BC'} ${wl.name} (${wl.symbols.length})`;
+                    if (!open && body.children.length === 0) {
+                        wl.symbols.forEach(sym => {
+                            const row = buildSymbolRow(sym);
+                            const removeBtn = document.createElement('button');
+                            removeBtn.textContent = '\u2212';
+                            removeBtn.title = 'Remove from this watchlist';
+                            removeBtn.style.cssText = 'padding:1px 6px; font-size:0.78rem; margin-left:4px;';
+                            removeBtn.onclick = async (e) => {
+                                e.stopPropagation();
+                                await removeSymbolFromWatchlist(wl.name, sym);
+                                renderWatchlistsSection();
+                            };
+                            row.appendChild(removeBtn);
+                            body.appendChild(row);
+                        });
+                    }
+                };
+
+                card.appendChild(header);
+                card.appendChild(body);
+                container.appendChild(card);
+            }
+        }
+
+        function renderMarketsSection() {
+            // Single-market setup for now (NSE) - the exclusive Market/Group/
+            // Sector/Industry category manager (Part F.1-F.2 full build) is a
+            // larger follow-up; this gives the "Markets" entry point a real,
+            // working default so it's not a dead UI element in the meantime.
+            const container = document.getElementById('marketsContainer');
+            container.innerHTML = '';
+            const header = document.createElement('div');
+            header.style.cssText = 'cursor:pointer; display:flex; justify-content:space-between; align-items:center; padding:8px; font-size:0.82rem; font-weight:600; background:var(--bg-input); border-radius:4px;';
+            header.textContent = `\u25B6 NSE (${availableSymbols.length})`;
+            const body = document.createElement('div');
+            body.style.cssText = 'display:none; max-height:220px; overflow-y:auto;';
+            header.onclick = () => {
+                const open = body.style.display !== 'none';
+                body.style.display = open ? 'none' : 'block';
+                header.textContent = `${open ? '\u25B6' : '\u25BC'} NSE (${availableSymbols.length})`;
+                if (!open && body.children.length === 0) {
+                    availableSymbols.forEach(sym => body.appendChild(buildSymbolRow(sym)));
+                }
+            };
+            container.appendChild(header);
+            container.appendChild(body);
+        }
+
+        // Builds one expandable category card (used for Groups and for each Sector's
+        // own card) - same visual/interaction pattern as renderWatchlistsSection's
+        // cards, but backed by the exclusive symbolMeta store instead of a watchlist's
+        // free-form symbols array, and with a "Remove" action that reverts the symbol
+        // to Unassigned for this field rather than deleting the symbol itself.
+        function buildCategoryCard(type, name, extraLabel, onRenamed, onDeleted) {
+            const card = document.createElement('div');
+            card.style.marginBottom = '4px';
+
+            const header = document.createElement('div');
+            header.style.cssText = 'cursor:pointer; display:flex; justify-content:space-between; align-items:center; padding:8px; font-size:0.82rem; font-weight:600; background:var(--bg-input); border-radius:4px;';
+
+            const titleSpan = document.createElement('span');
+            titleSpan.textContent = `\u25B6 ${name}${extraLabel ? ' ' + extraLabel : ''}`;
+            header.appendChild(titleSpan);
+
+            const btnGroup = document.createElement('div');
+            const renameBtn = document.createElement('button');
+            renameBtn.textContent = '\u270E';
+            renameBtn.title = 'Rename';
+            renameBtn.style.cssText = 'padding:1px 6px; font-size:0.72rem; margin-left:4px;';
+            renameBtn.onclick = async (e) => {
+                e.stopPropagation();
+                const newName = prompt(`Rename ${type} "${name}" to:`, name);
+                if (newName && newName.trim() && newName.trim() !== name) {
+                    const ok = await renameCategoryDef(type, name, newName.trim());
+                    if (!ok) alert(`A ${type} with that name already exists.`);
+                    onRenamed();
+                }
+            };
+            const deleteBtn = document.createElement('button');
+            deleteBtn.textContent = '\u2715';
+            deleteBtn.title = `Delete ${type}`;
+            deleteBtn.style.cssText = 'padding:1px 6px; font-size:0.72rem; margin-left:4px;';
+            deleteBtn.onclick = async (e) => {
+                e.stopPropagation();
+                if (confirm(`Delete ${type} "${name}"? Symbols assigned to it become Unassigned (they are NOT deleted).`)) {
+                    await deleteCategoryDef(type, name);
+                    onDeleted();
+                }
+            };
+            btnGroup.appendChild(renameBtn);
+            btnGroup.appendChild(deleteBtn);
+            header.appendChild(btnGroup);
+
+            const body = document.createElement('div');
+            body.style.cssText = 'display:none; max-height:220px; overflow-y:auto; padding-left:4px;';
+
+            header.onclick = async () => {
+                const open = body.style.display !== 'none';
+                body.style.display = open ? 'none' : 'block';
+                if (!open) {
+                    body.innerHTML = '';
+                    const symbols = await getSymbolsInCategory(type, name);
+                    titleSpan.textContent = `\u25BC ${name}${extraLabel ? ' ' + extraLabel : ''} (${symbols.length})`;
+                    if (symbols.length === 0) {
+                        const empty = document.createElement('div');
+                        empty.textContent = 'No symbols assigned yet.';
+                        empty.style.cssText = 'font-size:0.76rem; color:#868a9c; padding:6px;';
+                        body.appendChild(empty);
+                    } else {
+                        symbols.forEach(sym => {
+                            const row = buildSymbolRow(sym);
+                            const removeBtn = document.createElement('button');
+                            removeBtn.textContent = '\u2212';
+                            removeBtn.title = `Unassign from this ${type}`;
+                            removeBtn.style.cssText = 'padding:1px 6px; font-size:0.78rem; margin-left:4px;';
+                            removeBtn.onclick = async (e) => {
+                                e.stopPropagation();
+                                await setSymbolCategory(sym, type, null);
+                                header.onclick(); header.onclick(); // collapse+reopen to refresh
+                            };
+                            row.appendChild(removeBtn);
+                            body.appendChild(row);
+                        });
+                    }
+                } else {
+                    titleSpan.textContent = `\u25B6 ${name}${extraLabel ? ' ' + extraLabel : ''}`;
+                }
+            };
+
+            card.appendChild(header);
+            card.appendChild(body);
+            return card;
+        }
+
+        async function renderGroupsSection() {
+            const container = document.getElementById('groupsContainer');
+            container.innerHTML = '';
+            const groups = await getCategoryDefs('group');
+            if (groups.length === 0) {
+                const empty = document.createElement('div');
+                empty.textContent = 'No groups yet - tap "+ New" to create one (e.g. "Nifty 50").';
+                empty.style.cssText = 'font-size:0.78rem; color:#868a9c; padding:8px;';
+                container.appendChild(empty);
+                return;
+            }
+            groups.forEach(g => {
+                container.appendChild(buildCategoryCard('group', g.name, '', renderGroupsSection, renderGroupsSection));
+            });
+        }
+
+        async function renderSectorsSection() {
+            const container = document.getElementById('sectorsContainer');
+            container.innerHTML = '';
+            const sectors = await getCategoryDefs('sector');
+            const industries = await getCategoryDefs('industry');
+
+            if (sectors.length === 0 && industries.length === 0) {
+                const empty = document.createElement('div');
+                empty.textContent = 'No sectors/industries yet - tap "+ Sector" to create one.';
+                empty.style.cssText = 'font-size:0.78rem; color:#868a9c; padding:8px;';
+                container.appendChild(empty);
+                return;
+            }
+
+            sectors.forEach(s => {
+                const sectorCard = buildCategoryCard('sector', s.name, '', renderSectorsSection, renderSectorsSection);
+                // Nest this sector's industries visually inside its card, matching
+                // AmiBroker's parent-child sector/industry relationship.
+                const nested = industries.filter(i => i.sector === s.name);
+                if (nested.length > 0) {
+                    const nestWrap = document.createElement('div');
+                    nestWrap.style.cssText = 'padding-left:14px; border-left:2px solid var(--border); margin:4px 0 4px 8px;';
+                    nested.forEach(ind => {
+                        nestWrap.appendChild(buildCategoryCard('industry', ind.name, '', renderSectorsSection, renderSectorsSection));
+                    });
+                    sectorCard.appendChild(nestWrap);
+                }
+                container.appendChild(sectorCard);
+            });
+
+            // Industries with no sector assigned (or an orphaned/deleted sector) still
+            // need to be visible and manageable, not silently hidden.
+            const orphanIndustries = industries.filter(i => !i.sector || !sectors.some(s => s.name === i.sector));
+            if (orphanIndustries.length > 0) {
+                const label = document.createElement('div');
+                label.textContent = 'Industries without a sector:';
+                label.style.cssText = 'font-size:0.72rem; color:#868a9c; padding:6px 4px 2px;';
+                container.appendChild(label);
+                orphanIndustries.forEach(ind => {
+                    container.appendChild(buildCategoryCard('industry', ind.name, '', renderSectorsSection, renderSectorsSection));
+                });
+            }
+        }
+
+        function runSymbolSearch(query) {
+            const resultsSection = document.getElementById('searchResultsSection');
+            const resultsList = document.getElementById('searchResultsList');
+            const normalQuery = query.trim().toUpperCase();
+
+            if (!normalQuery) {
+                resultsSection.style.display = 'none';
+                return;
+            }
+
+            resultsSection.style.display = 'block';
+            resultsList.innerHTML = '';
+            const matches = availableSymbols.filter(s => s.toUpperCase().includes(normalQuery)).slice(0, 100);
+            if (matches.length === 0) {
+                const none = document.createElement('div');
+                none.textContent = 'No matches.';
+                none.style.cssText = 'font-size:0.78rem; color:#868a9c; padding:8px;';
+                resultsList.appendChild(none);
+            } else {
+                matches.forEach(sym => resultsList.appendChild(buildSymbolRow(sym)));
+            }
+        }
+
+        async function openSymbolBrowser() {
+            document.getElementById('symbolBrowserOverlay').style.display = 'block';
+            document.getElementById('symbolSearchInput').value = '';
+            document.getElementById('searchResultsSection').style.display = 'none';
+            renderAllSymbolsSection();
+            renderMarketsSection();
+            await renderWatchlistsSection();
+            await renderGroupsSection();
+            await renderSectorsSection();
+        }
+
+        document.getElementById('symbolBrowserBtn').addEventListener('click', openSymbolBrowser);
+        document.getElementById('closeSymbolBrowserBtn').addEventListener('click', () => {
+            document.getElementById('symbolBrowserOverlay').style.display = 'none';
+        });
+        document.getElementById('symbolBrowserOverlay').addEventListener('click', (e) => {
+            if (e.target.id === 'symbolBrowserOverlay') document.getElementById('symbolBrowserOverlay').style.display = 'none';
+        });
+        document.getElementById('symbolSearchInput').addEventListener('input', (e) => {
+            runSymbolSearch(e.target.value);
+        });
+
+        document.getElementById('allSymbolsSection').querySelector('.browser-section-header').addEventListener('click', function () {
+            const list = document.getElementById('allSymbolsList');
+            const open = list.style.display !== 'none';
+            list.style.display = open ? 'none' : 'block';
+            this.querySelector('span').innerHTML = `${open ? '\u25B6' : '\u25BC'} ALL <span id="allSymbolsCount" style="color:#868a9c; font-weight:400;">(${availableSymbols.length})</span>`;
+        });
+
+        document.getElementById('newWatchlistBtn').addEventListener('click', async () => {
+            const name = prompt('New watchlist name:');
+            if (name && name.trim()) {
+                const ok = await createWatchlist(name.trim());
+                if (!ok) alert('A watchlist with that name already exists.');
+                renderWatchlistsSection();
+            }
+        });
+
+        document.getElementById('importWatchlistBtn').addEventListener('click', () => {
+            document.getElementById('watchlistImportFile').click();
+        });
+        document.getElementById('watchlistImportFile').addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const text = await file.text();
+            const symbols = parseSymbolListText(text);
+            if (symbols.length === 0) {
+                alert('No symbols found in that file - expected one symbol per line.');
+                return;
+            }
+            // Default the watchlist name to the filename (without extension),
+            // matching how AmiBroker's .TLS import associates a file with a
+            // named list - but still let the user override it.
+            const defaultName = file.name.replace(/\.[^/.]+$/, '');
+            const name = prompt(`Import ${symbols.length} symbol(s) into watchlist named:`, defaultName);
+            if (!name || !name.trim()) return;
+            const trimmedName = name.trim();
+            const lists = await getWatchlists();
+            if (!lists.some(w => w.name === trimmedName)) {
+                await createWatchlist(trimmedName);
+            }
+            await addSymbolsToWatchlist(trimmedName, symbols);
+            renderWatchlistsSection();
+            e.target.value = ''; // allow re-selecting the same file later
+        });
+
+        document.getElementById('newGroupBtn').addEventListener('click', async () => {
+            const name = prompt('New group name (e.g. "Nifty 50"):');
+            if (name && name.trim()) {
+                const ok = await createCategoryDef('group', name.trim());
+                if (!ok) alert('A group with that name already exists.');
+                renderGroupsSection();
+            }
+        });
+
+        document.getElementById('newSectorBtn').addEventListener('click', async () => {
+            const name = prompt('New sector name:');
+            if (name && name.trim()) {
+                const ok = await createCategoryDef('sector', name.trim());
+                if (!ok) alert('A sector with that name already exists.');
+                renderSectorsSection();
+            }
+        });
+
+        document.getElementById('newIndustryBtn').addEventListener('click', async () => {
+            const sectors = await getCategoryDefs('sector');
+            let parentSector = null;
+            if (sectors.length > 0) {
+                const sectorNames = sectors.map(s => s.name).join(', ');
+                const chosen = prompt(`Parent sector for this industry (existing: ${sectorNames})\nLeave blank for none:`);
+                if (chosen && chosen.trim()) parentSector = chosen.trim();
+            }
+            const name = prompt('New industry name:');
+            if (name && name.trim()) {
+                const ok = await createCategoryDef('industry', name.trim(), parentSector);
+                if (!ok) alert('An industry with that name already exists.');
+                renderSectorsSection();
+            }
+        });
+
+        document.getElementById('openCategoryManagerBtn').addEventListener('click', openCategoryManager);
+
+        async function populateCategoryManagerValues() {
+            const type = document.getElementById('catMgrType').value;
+            const valueSelect = document.getElementById('catMgrValue');
+            valueSelect.innerHTML = '';
+
+            if (type === 'market') {
+                // Single-market setup today (NSE) - still shown here so the Category
+                // Manager works uniformly across all four types, and is ready the
+                // moment a second market (BSE, US, etc.) is added.
+                const opt = document.createElement('option');
+                opt.value = 'NSE'; opt.textContent = 'NSE';
+                valueSelect.appendChild(opt);
+                return;
+            }
+
+            const defs = await getCategoryDefs(type);
+            if (defs.length === 0) {
+                const opt = document.createElement('option');
+                opt.value = ''; opt.textContent = `No ${type}s yet - create one below`;
+                valueSelect.appendChild(opt);
+            } else {
+                defs.forEach(d => {
+                    const opt = document.createElement('option');
+                    opt.value = d.name; opt.textContent = d.name;
+                    valueSelect.appendChild(opt);
+                });
+            }
+            const newOpt = document.createElement('option');
+            newOpt.value = '__new__'; newOpt.textContent = '+ Create new...';
+            valueSelect.appendChild(newOpt);
+        }
+
+        async function openCategoryManager() {
+            document.getElementById('categoryManagerOverlay').style.display = 'flex';
+            document.getElementById('catMgrSymbols').value = '';
+            document.getElementById('catMgrStatus').textContent = '';
+            await populateCategoryManagerValues();
+        }
+
+        document.getElementById('catMgrType').addEventListener('change', populateCategoryManagerValues);
+
+        document.getElementById('closeCategoryManagerBtn').addEventListener('click', () => {
+            document.getElementById('categoryManagerOverlay').style.display = 'none';
+        });
+        document.getElementById('categoryManagerOverlay').addEventListener('click', (e) => {
+            if (e.target.id === 'categoryManagerOverlay') document.getElementById('categoryManagerOverlay').style.display = 'none';
+        });
+
+        document.getElementById('catMgrImportFileBtn').addEventListener('click', () => {
+            document.getElementById('catMgrImportFile').click();
+        });
+        document.getElementById('catMgrImportFile').addEventListener('change', async (e) => {
+            const file = e.target.files[0];
+            if (!file) return;
+            const text = await file.text();
+            const existing = document.getElementById('catMgrSymbols').value.trim();
+            document.getElementById('catMgrSymbols').value = existing ? existing + '\n' + text : text;
+            e.target.value = '';
+        });
+
+        document.getElementById('catMgrAssignBtn').addEventListener('click', async () => {
+            const type = document.getElementById('catMgrType').value;
+            let value = document.getElementById('catMgrValue').value;
+            const status = document.getElementById('catMgrStatus');
+
+            if (value === '__new__') {
+                const name = prompt(`New ${type} name:`);
+                if (!name || !name.trim()) return;
+                value = name.trim();
+                if (type !== 'market') {
+                    let parentSector = null;
+                    if (type === 'industry') {
+                        const sectors = await getCategoryDefs('sector');
+                        if (sectors.length > 0) {
+                            const chosen = prompt(`Parent sector (existing: ${sectors.map(s => s.name).join(', ')})\nLeave blank for none:`);
+                            if (chosen && chosen.trim()) parentSector = chosen.trim();
+                        }
+                    }
+                    const ok = await createCategoryDef(type, value, parentSector);
+                    if (!ok) { status.textContent = `A ${type} named "${value}" already exists - using it.`; }
+                }
+            }
+
+            if (!value) { status.textContent = 'Choose or create a category value first.'; return; }
+
+            // Supports both one-per-line and comma-separated input, matching the
+            // flexibility of a quick paste from anywhere.
+            const raw = document.getElementById('catMgrSymbols').value;
+            const symbols = raw.split(/[\n,]/).map(s => s.trim().toUpperCase()).filter(s => s.length > 0);
+            if (symbols.length === 0) { status.textContent = 'Enter at least one symbol.'; return; }
+
+            await bulkSetSymbolCategory(symbols, type, value);
+            status.textContent = `Assigned ${symbols.length} symbol(s) to ${type} "${value}".`;
+            renderGroupsSection();
+            renderSectorsSection();
+        });
 
         // Technical Indicators
         function calculateSMA(data, period) {
