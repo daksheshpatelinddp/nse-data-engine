@@ -85,6 +85,17 @@
 
     <header>
         <div class="logo">AmiBroker</div>
+
+        <!-- Quick-add search box: separate from the Symbols browser panel. This is
+             for "type a symbol, open it immediately" - the Symbols panel (button
+             below) is for browsing the database/market/category/watchlist structure.
+             Both end up calling the same openSymbolOnChart() to actually load a chart. -->
+        <div id="quickSearchWrap" style="position:relative; flex:1; max-width:200px; min-width:90px;">
+            <input type="text" id="quickSearchInput" placeholder="Search symbol..." autocomplete="off"
+                   style="width:100%; background:var(--bg-input); color:var(--text-bright); border:1px solid var(--border); border-radius:4px; padding:6px 8px; font-size:0.82rem;">
+            <div id="quickSearchResults" style="display:none; position:absolute; top:100%; left:0; right:0; margin-top:2px; background:var(--bg-panel); border:1px solid var(--border); border-radius:4px; max-height:260px; overflow-y:auto; z-index:150; box-shadow:0 4px 12px rgba(0,0,0,0.4);"></div>
+        </div>
+
         <button id="symbolBrowserBtn">&#128193; Symbols</button>
         <button id="settingsBtn" title="Settings" style="font-size:1rem; padding:5px 9px;">&#9881;</button>
         <div id="statusBadge" class="status-badge status-online">Connecting R2...</div>
@@ -180,16 +191,9 @@
                     <div id="searchResultsList"></div>
                 </div>
 
-                <!-- ALL -->
-                <div id="allSymbolsSection">
-                    <div class="browser-section-header" data-target="allSymbolsList" style="cursor:pointer; display:flex; justify-content:space-between; align-items:center; padding:8px; font-size:0.82rem; font-weight:600; background:var(--bg-input); border-radius:4px; margin-bottom:4px;">
-                        <span>&#9654; ALL <span id="allSymbolsCount" style="color:#868a9c; font-weight:400;"></span></span>
-                    </div>
-                    <div id="allSymbolsList" style="display:none; max-height:260px; overflow-y:auto;"></div>
-                </div>
-
-                <!-- Watchlists -->
-                <div style="margin-top:14px;">
+                <!-- Watchlists - separate from the Markets/database/category structure
+                     below, by design: free-membership, cross-market, user-curated lists. -->
+                <div>
                     <div style="display:flex; justify-content:space-between; align-items:center; padding:4px 8px;">
                         <span style="font-size:0.72rem; color:#868a9c; text-transform:uppercase;">Watchlists</span>
                         <div>
@@ -200,34 +204,18 @@
                     <div id="watchlistsContainer"></div>
                 </div>
 
-                <!-- Markets (exclusive category - Part F.1) -->
+                <!-- Markets / Databases - each market is its own self-contained symbol
+                     universe (NSE database, BSE database, etc.), with its own All Symbols
+                     list and its own Groups/Sectors/Industries nested inside it. This is
+                     deliberately a different concept from Watchlists above. -->
                 <div style="margin-top:14px;">
-                    <div style="font-size:0.72rem; color:#868a9c; text-transform:uppercase; padding:4px 8px;">Markets</div>
+                    <div style="display:flex; justify-content:space-between; align-items:center; padding:4px 8px;">
+                        <span style="font-size:0.72rem; color:#868a9c; text-transform:uppercase;">Markets / Databases</span>
+                    </div>
                     <div id="marketsContainer"></div>
                 </div>
 
-                <!-- Groups (exclusive category) -->
-                <div style="margin-top:14px;">
-                    <div style="display:flex; justify-content:space-between; align-items:center; padding:4px 8px;">
-                        <span style="font-size:0.72rem; color:#868a9c; text-transform:uppercase;">Groups</span>
-                        <button id="newGroupBtn" title="New group" style="padding:3px 8px; font-size:0.75rem;">+ New</button>
-                    </div>
-                    <div id="groupsContainer"></div>
-                </div>
-
-                <!-- Sectors (exclusive category, with nested Industries) -->
-                <div style="margin-top:14px;">
-                    <div style="display:flex; justify-content:space-between; align-items:center; padding:4px 8px;">
-                        <span style="font-size:0.72rem; color:#868a9c; text-transform:uppercase;">Sectors &amp; Industries</span>
-                        <div>
-                            <button id="newIndustryBtn" title="New industry" style="padding:3px 8px; font-size:0.75rem;">+ Industry</button>
-                            <button id="newSectorBtn" title="New sector" style="padding:3px 8px; font-size:0.75rem;">+ Sector</button>
-                        </div>
-                    </div>
-                    <div id="sectorsContainer"></div>
-                </div>
-
-                <!-- Category Manager entry point (bulk assignment) -->
+                <!-- Category Manager entry point (bulk assignment, works across markets) -->
                 <div style="margin-top:14px; padding:0 8px;">
                     <button id="openCategoryManagerBtn" style="width:100%; padding:8px; font-size:0.82rem;">Category Manager (assign symbols)</button>
                 </div>
@@ -274,6 +262,28 @@
         </div>
     </div>
     <input type="file" id="catMgrImportFile" accept=".txt,.tls,.csv" style="display:none;">
+
+    <!-- Small reusable dialog for creating a new Industry with a real sector
+         dropdown (not a prompt()) - e.g. assigning "Financial" sector to a new
+         "Banking" industry, or "Chemical" sector to "Speciality Chemicals". -->
+    <div id="newIndustryOverlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:120; align-items:center; justify-content:center;">
+        <div style="background:var(--bg-panel); border:1px solid var(--border); border-radius:8px; width:min(340px, 90vw); padding:16px;">
+            <h2 style="font-size:1.0rem; margin-bottom:12px;">New Industry</h2>
+
+            <label style="font-size:0.78rem; display:block; margin-bottom:3px;">Industry name</label>
+            <input type="text" id="newIndustryName" placeholder="e.g. Banking" style="width:100%; margin-bottom:10px; padding:6px; background:var(--bg-input); color:var(--text-bright); border:1px solid var(--border); border-radius:4px;">
+
+            <label style="font-size:0.78rem; display:block; margin-bottom:3px;">Parent sector</label>
+            <select id="newIndustrySector" style="width:100%; margin-bottom:14px; padding:6px; background:var(--bg-input); color:var(--text-bright); border:1px solid var(--border); border-radius:4px;">
+                <option value="">(No sector)</option>
+            </select>
+
+            <div style="display:flex; gap:8px;">
+                <button id="cancelNewIndustryBtn" style="flex:1; padding:8px; font-size:0.82rem;">Cancel</button>
+                <button id="confirmNewIndustryBtn" style="flex:1; padding:8px; font-size:0.82rem; background:var(--accent); color:#fff;">Create</button>
+            </div>
+        </div>
+    </div>
 
     <div class="tabs-bar" id="tabsBar">
         <button class="add-tab-btn" id="addTabBtn" title="New AmiBroker Tab">+</button>
@@ -885,8 +895,7 @@
             label.textContent = sym;
             label.style.flex = '1';
             label.onclick = () => {
-                if (activeTabId) loadDataForTab(activeTabId, sym);
-                else createNewTab(sym);
+                openSymbolOnChart(sym);
                 document.getElementById('symbolBrowserOverlay').style.display = 'none';
             };
 
@@ -896,7 +905,7 @@
             newTabBtn.style.cssText = 'padding:1px 7px; font-size:0.78rem; margin-left:6px;';
             newTabBtn.onclick = (e) => {
                 e.stopPropagation();
-                createNewTab(sym);
+                openSymbolOnChart(sym, true);
                 document.getElementById('symbolBrowserOverlay').style.display = 'none';
             };
 
@@ -905,15 +914,9 @@
             return row;
         }
 
-        function renderAllSymbolsSection() {
-            document.getElementById('allSymbolsCount').textContent = `(${availableSymbols.length})`;
-            const list = document.getElementById('allSymbolsList');
-            list.innerHTML = '';
-            // Render lazily (only when expanded) - 2978 DOM rows up front would
-            // be sluggish on mobile; building them only on first expand keeps
-            // the panel snappy to open.
-            availableSymbols.forEach(sym => list.appendChild(buildSymbolRow(sym)));
-        }
+        // (The old global "All Symbols" section was replaced by the per-market
+        // "All Symbols" list rendered inside renderMarketBody() - see MARKETS
+        // comment above renderMarketsSection for why each market owns its own.)
 
         async function renderWatchlistsSection() {
             const container = document.getElementById('watchlistsContainer');
@@ -999,28 +1002,184 @@
             }
         }
 
+        // Each market is its own self-contained symbol universe (NSE database, BSE
+        // database, etc. - a different concept from Watchlists, which are separate
+        // and cross-cutting). Single-market setup today (NSE only) - add more names
+        // to this array once a second market/dataset actually exists. Categories
+        // (Groups, Sectors, Industries) are scoped PER MARKET and nested inside it,
+        // since a "Banking" industry in one market is a distinct thing from a
+        // same-named industry in another.
+        const MARKETS = ['NSE'];
+
         function renderMarketsSection() {
-            // Single-market setup for now (NSE) - the exclusive Market/Group/
-            // Sector/Industry category manager (Part F.1-F.2 full build) is a
-            // larger follow-up; this gives the "Markets" entry point a real,
-            // working default so it's not a dead UI element in the meantime.
             const container = document.getElementById('marketsContainer');
             container.innerHTML = '';
-            const header = document.createElement('div');
-            header.style.cssText = 'cursor:pointer; display:flex; justify-content:space-between; align-items:center; padding:8px; font-size:0.82rem; font-weight:600; background:var(--bg-input); border-radius:4px;';
-            header.textContent = `\u25B6 NSE (${availableSymbols.length})`;
-            const body = document.createElement('div');
-            body.style.cssText = 'display:none; max-height:220px; overflow-y:auto;';
-            header.onclick = () => {
-                const open = body.style.display !== 'none';
-                body.style.display = open ? 'none' : 'block';
-                header.textContent = `${open ? '\u25B6' : '\u25BC'} NSE (${availableSymbols.length})`;
-                if (!open && body.children.length === 0) {
-                    availableSymbols.forEach(sym => body.appendChild(buildSymbolRow(sym)));
+
+            MARKETS.forEach(marketName => {
+                const card = document.createElement('div');
+                card.style.marginBottom = '6px';
+
+                const header = document.createElement('div');
+                header.style.cssText = 'cursor:pointer; display:flex; justify-content:space-between; align-items:center; padding:8px; font-size:0.82rem; font-weight:600; background:var(--bg-input); border-radius:4px;';
+                header.textContent = `\u25B6 ${marketName} (${availableSymbols.length})`;
+
+                const body = document.createElement('div');
+                body.style.cssText = 'display:none; padding-left:4px;';
+
+                header.onclick = async () => {
+                    const open = body.style.display !== 'none';
+                    body.style.display = open ? 'none' : 'block';
+                    header.textContent = `${open ? '\u25B6' : '\u25BC'} ${marketName} (${availableSymbols.length})`;
+                    if (!open && body.children.length === 0) {
+                        await renderMarketBody(body, marketName);
+                    }
+                };
+
+                card.appendChild(header);
+                card.appendChild(body);
+                container.appendChild(card);
+            });
+        }
+
+        // Renders All Symbols + Groups + Sectors/Industries nested inside one
+        // market's expanded body. Groups/Sectors "+ New" buttons are created
+        // dynamically here (not static HTML) since each market gets its own set.
+        async function renderMarketBody(body, marketName) {
+            body.innerHTML = '';
+
+            // --- All Symbols (of this market) ---
+            const allHeader = document.createElement('div');
+            allHeader.style.cssText = 'cursor:pointer; padding:6px 8px; font-size:0.78rem; font-weight:600; margin-top:4px;';
+            allHeader.textContent = `\u25B6 All Symbols (${availableSymbols.length})`;
+            const allList = document.createElement('div');
+            allList.style.cssText = 'display:none; max-height:200px; overflow-y:auto;';
+            allHeader.onclick = () => {
+                const open = allList.style.display !== 'none';
+                allList.style.display = open ? 'none' : 'block';
+                allHeader.textContent = `${open ? '\u25B6' : '\u25BC'} All Symbols (${availableSymbols.length})`;
+                if (!open && allList.children.length === 0) {
+                    availableSymbols.forEach(sym => allList.appendChild(buildSymbolRow(sym)));
                 }
             };
-            container.appendChild(header);
-            container.appendChild(body);
+            body.appendChild(allHeader);
+            body.appendChild(allList);
+
+            // --- Groups ---
+            const groupsHeaderRow = document.createElement('div');
+            groupsHeaderRow.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:6px 8px; margin-top:8px;';
+            const groupsLabel = document.createElement('span');
+            groupsLabel.style.cssText = 'font-size:0.72rem; color:#868a9c; text-transform:uppercase;';
+            groupsLabel.textContent = 'Groups';
+            const newGroupBtnEl = document.createElement('button');
+            newGroupBtnEl.textContent = '+ New';
+            newGroupBtnEl.style.cssText = 'padding:3px 8px; font-size:0.72rem;';
+            groupsHeaderRow.appendChild(groupsLabel);
+            groupsHeaderRow.appendChild(newGroupBtnEl);
+            body.appendChild(groupsHeaderRow);
+
+            const groupsListEl = document.createElement('div');
+            body.appendChild(groupsListEl);
+
+            async function refreshGroups() {
+                groupsListEl.innerHTML = '';
+                const groups = await getCategoryDefs('group');
+                if (groups.length === 0) {
+                    const empty = document.createElement('div');
+                    empty.textContent = 'No groups yet.';
+                    empty.style.cssText = 'font-size:0.76rem; color:#868a9c; padding:4px 8px;';
+                    groupsListEl.appendChild(empty);
+                } else {
+                    groups.forEach(g => {
+                        groupsListEl.appendChild(buildCategoryCard('group', g.name, '', refreshGroups, refreshGroups));
+                    });
+                }
+            }
+            newGroupBtnEl.onclick = async () => {
+                const name = prompt('New group name (e.g. "Nifty 50"):');
+                if (name && name.trim()) {
+                    const ok = await createCategoryDef('group', name.trim());
+                    if (!ok) alert('A group with that name already exists.');
+                    refreshGroups();
+                }
+            };
+            await refreshGroups();
+
+            // --- Sectors & Industries ---
+            const sectorsHeaderRow = document.createElement('div');
+            sectorsHeaderRow.style.cssText = 'display:flex; justify-content:space-between; align-items:center; padding:6px 8px; margin-top:8px;';
+            const sectorsLabel = document.createElement('span');
+            sectorsLabel.style.cssText = 'font-size:0.72rem; color:#868a9c; text-transform:uppercase;';
+            sectorsLabel.textContent = 'Sectors & Industries';
+            const sectorBtns = document.createElement('div');
+            const newIndustryBtnEl = document.createElement('button');
+            newIndustryBtnEl.textContent = '+ Industry';
+            newIndustryBtnEl.style.cssText = 'padding:3px 8px; font-size:0.72rem; margin-right:4px;';
+            const newSectorBtnEl = document.createElement('button');
+            newSectorBtnEl.textContent = '+ Sector';
+            newSectorBtnEl.style.cssText = 'padding:3px 8px; font-size:0.72rem;';
+            sectorBtns.appendChild(newIndustryBtnEl);
+            sectorBtns.appendChild(newSectorBtnEl);
+            sectorsHeaderRow.appendChild(sectorsLabel);
+            sectorsHeaderRow.appendChild(sectorBtns);
+            body.appendChild(sectorsHeaderRow);
+
+            const sectorsListEl = document.createElement('div');
+            body.appendChild(sectorsListEl);
+
+            async function refreshSectors() {
+                sectorsListEl.innerHTML = '';
+                const sectors = await getCategoryDefs('sector');
+                const industries = await getCategoryDefs('industry');
+
+                if (sectors.length === 0 && industries.length === 0) {
+                    const empty = document.createElement('div');
+                    empty.textContent = 'No sectors/industries yet.';
+                    empty.style.cssText = 'font-size:0.76rem; color:#868a9c; padding:4px 8px;';
+                    sectorsListEl.appendChild(empty);
+                    return;
+                }
+
+                sectors.forEach(s => {
+                    const sectorCard = buildCategoryCard('sector', s.name, '', refreshSectors, refreshSectors);
+                    const nested = industries.filter(i => i.sector === s.name);
+                    if (nested.length > 0) {
+                        const nestWrap = document.createElement('div');
+                        nestWrap.style.cssText = 'padding-left:14px; border-left:2px solid var(--border); margin:4px 0 4px 8px;';
+                        nested.forEach(ind => {
+                            nestWrap.appendChild(buildCategoryCard('industry', ind.name, '', refreshSectors, refreshSectors));
+                        });
+                        sectorCard.appendChild(nestWrap);
+                    }
+                    sectorsListEl.appendChild(sectorCard);
+                });
+
+                const orphanIndustries = industries.filter(i => !i.sector || !sectors.some(s => s.name === i.sector));
+                if (orphanIndustries.length > 0) {
+                    const label = document.createElement('div');
+                    label.textContent = 'Industries without a sector:';
+                    label.style.cssText = 'font-size:0.72rem; color:#868a9c; padding:6px 4px 2px;';
+                    sectorsListEl.appendChild(label);
+                    orphanIndustries.forEach(ind => {
+                        sectorsListEl.appendChild(buildCategoryCard('industry', ind.name, '', refreshSectors, refreshSectors));
+                    });
+                }
+            }
+            newSectorBtnEl.onclick = async () => {
+                const name = prompt('New sector name:');
+                if (name && name.trim()) {
+                    const ok = await createCategoryDef('sector', name.trim());
+                    if (!ok) alert('A sector with that name already exists.');
+                    refreshSectors();
+                }
+            };
+            newIndustryBtnEl.onclick = async () => {
+                const result = await openNewIndustryDialog();
+                if (!result) return;
+                const ok = await createCategoryDef('industry', result.name, result.sector);
+                if (!ok) alert('An industry with that name already exists.');
+                refreshSectors();
+            };
+            await refreshSectors();
         }
 
         // Builds one expandable category card (used for Groups and for each Sector's
@@ -1109,65 +1268,9 @@
             return card;
         }
 
-        async function renderGroupsSection() {
-            const container = document.getElementById('groupsContainer');
-            container.innerHTML = '';
-            const groups = await getCategoryDefs('group');
-            if (groups.length === 0) {
-                const empty = document.createElement('div');
-                empty.textContent = 'No groups yet - tap "+ New" to create one (e.g. "Nifty 50").';
-                empty.style.cssText = 'font-size:0.78rem; color:#868a9c; padding:8px;';
-                container.appendChild(empty);
-                return;
-            }
-            groups.forEach(g => {
-                container.appendChild(buildCategoryCard('group', g.name, '', renderGroupsSection, renderGroupsSection));
-            });
-        }
-
-        async function renderSectorsSection() {
-            const container = document.getElementById('sectorsContainer');
-            container.innerHTML = '';
-            const sectors = await getCategoryDefs('sector');
-            const industries = await getCategoryDefs('industry');
-
-            if (sectors.length === 0 && industries.length === 0) {
-                const empty = document.createElement('div');
-                empty.textContent = 'No sectors/industries yet - tap "+ Sector" to create one.';
-                empty.style.cssText = 'font-size:0.78rem; color:#868a9c; padding:8px;';
-                container.appendChild(empty);
-                return;
-            }
-
-            sectors.forEach(s => {
-                const sectorCard = buildCategoryCard('sector', s.name, '', renderSectorsSection, renderSectorsSection);
-                // Nest this sector's industries visually inside its card, matching
-                // AmiBroker's parent-child sector/industry relationship.
-                const nested = industries.filter(i => i.sector === s.name);
-                if (nested.length > 0) {
-                    const nestWrap = document.createElement('div');
-                    nestWrap.style.cssText = 'padding-left:14px; border-left:2px solid var(--border); margin:4px 0 4px 8px;';
-                    nested.forEach(ind => {
-                        nestWrap.appendChild(buildCategoryCard('industry', ind.name, '', renderSectorsSection, renderSectorsSection));
-                    });
-                    sectorCard.appendChild(nestWrap);
-                }
-                container.appendChild(sectorCard);
-            });
-
-            // Industries with no sector assigned (or an orphaned/deleted sector) still
-            // need to be visible and manageable, not silently hidden.
-            const orphanIndustries = industries.filter(i => !i.sector || !sectors.some(s => s.name === i.sector));
-            if (orphanIndustries.length > 0) {
-                const label = document.createElement('div');
-                label.textContent = 'Industries without a sector:';
-                label.style.cssText = 'font-size:0.72rem; color:#868a9c; padding:6px 4px 2px;';
-                container.appendChild(label);
-                orphanIndustries.forEach(ind => {
-                    container.appendChild(buildCategoryCard('industry', ind.name, '', renderSectorsSection, renderSectorsSection));
-                });
-            }
-        }
+        // (Groups/Sectors rendering now lives inside renderMarketBody() above,
+        // nested per-market rather than as standalone top-level sections - see
+        // the comment at MARKETS near renderMarketsSection for why.)
 
         function runSymbolSearch(query) {
             const resultsSection = document.getElementById('searchResultsSection');
@@ -1196,11 +1299,8 @@
             document.getElementById('symbolBrowserOverlay').style.display = 'block';
             document.getElementById('symbolSearchInput').value = '';
             document.getElementById('searchResultsSection').style.display = 'none';
-            renderAllSymbolsSection();
-            renderMarketsSection();
+            renderMarketsSection(); // renders each market's own All Symbols + Groups + Sectors/Industries when expanded
             await renderWatchlistsSection();
-            await renderGroupsSection();
-            await renderSectorsSection();
         }
 
         document.getElementById('symbolBrowserBtn').addEventListener('click', openSymbolBrowser);
@@ -1212,13 +1312,6 @@
         });
         document.getElementById('symbolSearchInput').addEventListener('input', (e) => {
             runSymbolSearch(e.target.value);
-        });
-
-        document.getElementById('allSymbolsSection').querySelector('.browser-section-header').addEventListener('click', function () {
-            const list = document.getElementById('allSymbolsList');
-            const open = list.style.display !== 'none';
-            list.style.display = open ? 'none' : 'block';
-            this.querySelector('span').innerHTML = `${open ? '\u25B6' : '\u25BC'} ALL <span id="allSymbolsCount" style="color:#868a9c; font-weight:400;">(${availableSymbols.length})</span>`;
         });
 
         document.getElementById('newWatchlistBtn').addEventListener('click', async () => {
@@ -1258,39 +1351,51 @@
             e.target.value = ''; // allow re-selecting the same file later
         });
 
-        document.getElementById('newGroupBtn').addEventListener('click', async () => {
-            const name = prompt('New group name (e.g. "Nifty 50"):');
-            if (name && name.trim()) {
-                const ok = await createCategoryDef('group', name.trim());
-                if (!ok) alert('A group with that name already exists.');
-                renderGroupsSection();
-            }
-        });
+        // (Standalone "+ New" group/sector buttons were replaced by the per-market
+        // buttons created inside renderMarketBody() - groups/sectors are scoped to
+        // the market you're browsing, so their "+ New" controls live there now.)
 
-        document.getElementById('newSectorBtn').addEventListener('click', async () => {
-            const name = prompt('New sector name:');
-            if (name && name.trim()) {
-                const ok = await createCategoryDef('sector', name.trim());
-                if (!ok) alert('A sector with that name already exists.');
-                renderSectorsSection();
-            }
-        });
+        // Reusable "New Industry" dialog with a real sector <select> dropdown -
+        // returns {name, sector} or null if cancelled. Used by both the standalone
+        // "+ Industry" button and the Category Manager's inline "create new" flow,
+        // so there's one consistent way to do this, not two different prompt() flows.
+        function openNewIndustryDialog() {
+            return new Promise(async (resolve) => {
+                const overlay = document.getElementById('newIndustryOverlay');
+                const nameInput = document.getElementById('newIndustryName');
+                const sectorSelect = document.getElementById('newIndustrySector');
+                const confirmBtn = document.getElementById('confirmNewIndustryBtn');
+                const cancelBtn = document.getElementById('cancelNewIndustryBtn');
 
-        document.getElementById('newIndustryBtn').addEventListener('click', async () => {
-            const sectors = await getCategoryDefs('sector');
-            let parentSector = null;
-            if (sectors.length > 0) {
-                const sectorNames = sectors.map(s => s.name).join(', ');
-                const chosen = prompt(`Parent sector for this industry (existing: ${sectorNames})\nLeave blank for none:`);
-                if (chosen && chosen.trim()) parentSector = chosen.trim();
-            }
-            const name = prompt('New industry name:');
-            if (name && name.trim()) {
-                const ok = await createCategoryDef('industry', name.trim(), parentSector);
-                if (!ok) alert('An industry with that name already exists.');
-                renderSectorsSection();
-            }
-        });
+                nameInput.value = '';
+                sectorSelect.innerHTML = '<option value="">(No sector)</option>';
+                const sectors = await getCategoryDefs('sector');
+                sectors.forEach(s => {
+                    const opt = document.createElement('option');
+                    opt.value = s.name; opt.textContent = s.name;
+                    sectorSelect.appendChild(opt);
+                });
+
+                overlay.style.display = 'flex';
+                nameInput.focus();
+
+                function cleanup(result) {
+                    overlay.style.display = 'none';
+                    confirmBtn.onclick = null;
+                    cancelBtn.onclick = null;
+                    resolve(result);
+                }
+                confirmBtn.onclick = () => {
+                    const name = nameInput.value.trim();
+                    if (!name) { nameInput.focus(); return; }
+                    cleanup({ name, sector: sectorSelect.value || null });
+                };
+                cancelBtn.onclick = () => cleanup(null);
+            });
+        }
+
+        // (Standalone "+ Industry" button was likewise replaced by the per-market
+        // version inside renderMarketBody(), which already uses openNewIndustryDialog().)
 
         document.getElementById('openCategoryManagerBtn').addEventListener('click', openCategoryManager);
 
@@ -1360,19 +1465,19 @@
             const status = document.getElementById('catMgrStatus');
 
             if (value === '__new__') {
-                const name = prompt(`New ${type} name:`);
-                if (!name || !name.trim()) return;
-                value = name.trim();
-                if (type !== 'market') {
-                    let parentSector = null;
-                    if (type === 'industry') {
-                        const sectors = await getCategoryDefs('sector');
-                        if (sectors.length > 0) {
-                            const chosen = prompt(`Parent sector (existing: ${sectors.map(s => s.name).join(', ')})\nLeave blank for none:`);
-                            if (chosen && chosen.trim()) parentSector = chosen.trim();
-                        }
-                    }
-                    const ok = await createCategoryDef(type, value, parentSector);
+                if (type === 'industry') {
+                    // Reuse the same dialog (with its real sector dropdown) as the
+                    // standalone "+ Industry" button, rather than a separate prompt() flow.
+                    const result = await openNewIndustryDialog();
+                    if (!result) return;
+                    value = result.name;
+                    const ok = await createCategoryDef('industry', value, result.sector);
+                    if (!ok) { status.textContent = `An industry named "${value}" already exists - using it.`; }
+                } else if (type !== 'market') {
+                    const name = prompt(`New ${type} name:`);
+                    if (!name || !name.trim()) return;
+                    value = name.trim();
+                    const ok = await createCategoryDef(type, value, null);
                     if (!ok) { status.textContent = `A ${type} named "${value}" already exists - using it.`; }
                 }
             }
@@ -1387,8 +1492,10 @@
 
             await bulkSetSymbolCategory(symbols, type, value);
             status.textContent = `Assigned ${symbols.length} symbol(s) to ${type} "${value}".`;
-            renderGroupsSection();
-            renderSectorsSection();
+            // Groups/Sectors now render per-market (on expand) rather than as a
+            // standalone global section - re-rendering the Markets list resets any
+            // expanded card so the next tap shows the freshly-assigned symbols.
+            renderMarketsSection();
         });
 
         // Technical Indicators
@@ -1696,9 +1803,9 @@
             document.getElementById(`header-${tabId}`).classList.add('active');
             document.getElementById(`content-${tabId}`).classList.add('active');
 
-            if (tabs[tabId] && tabs[tabId].symbol) {
-                document.getElementById('symbolSelect').value = tabs[tabId].symbol;
-            }
+            // (The old symbolSelect dropdown no longer exists - replaced by the
+            // header quick-search box and the Symbols browser panel. Nothing needs
+            // to sync here anymore; the quick-search box clears itself after use.)
 
             window.dispatchEvent(new Event('resize'));
         }
@@ -1985,15 +2092,91 @@
             if (tab.rsiSeries) tab.rsiSeries.setData(calculateRSI(tab.data, 14));
         }
 
-        document.getElementById('loadBtn').onclick = () => {
-            const sym = document.getElementById('symbolSelect').value;
-            if (sym && activeTabId) loadDataForTab(activeTabId, sym);
-        };
+        // Shared by the quick-search box AND every symbol row in the Symbols panel
+        // (All/Markets/Groups/Sectors/Watchlists) - one function, one behavior,
+        // regardless of where the symbol was picked from. Default: load into the
+        // active tab (quick lookup/replace); forceNewTab: open a fresh tab instead.
+        function openSymbolOnChart(sym, forceNewTab) {
+            if (!forceNewTab && activeTabId) {
+                loadDataForTab(activeTabId, sym);
+            } else {
+                createNewTab(sym);
+            }
+        }
 
         document.getElementById('addTabBtn').onclick = () => {
-            const sym = document.getElementById('symbolSelect').value;
-            createNewTab(sym);
+            // "+" always opens a brand new tab with a sensible default symbol -
+            // independent of whatever's in the quick-search box.
+            createNewTab();
         };
+
+        // ---- Quick-search box (header) ----
+        function renderQuickSearchResults(query) {
+            const resultsEl = document.getElementById('quickSearchResults');
+            const q = query.trim().toUpperCase();
+            if (!q) { resultsEl.style.display = 'none'; resultsEl.innerHTML = ''; return; }
+
+            // Prioritize "starts with" matches before "contains" matches - typing
+            // "REL" should surface RELIANCE first, not bury it among symbols that
+            // merely contain "REL" somewhere in the middle.
+            const starts = [], contains = [];
+            for (const s of availableSymbols) {
+                const up = s.toUpperCase();
+                if (up.startsWith(q)) starts.push(s);
+                else if (up.includes(q)) contains.push(s);
+                if (starts.length + contains.length >= 60) break; // cap work on huge lists
+            }
+            const matches = starts.concat(contains).slice(0, 10);
+
+            resultsEl.innerHTML = '';
+            if (matches.length === 0) {
+                resultsEl.style.display = 'none';
+                return;
+            }
+            matches.forEach(sym => {
+                const row = document.createElement('div');
+                row.textContent = sym;
+                row.style.cssText = 'padding:7px 10px; font-size:0.82rem; cursor:pointer;';
+                row.onmouseenter = () => row.style.background = 'var(--bg-input)';
+                row.onmouseleave = () => row.style.background = 'transparent';
+                row.onclick = () => {
+                    openSymbolOnChart(sym);
+                    document.getElementById('quickSearchInput').value = '';
+                    resultsEl.style.display = 'none';
+                };
+                resultsEl.appendChild(row);
+            });
+            resultsEl.style.display = 'block';
+        }
+
+        document.getElementById('quickSearchInput').addEventListener('input', (e) => {
+            renderQuickSearchResults(e.target.value);
+        });
+        document.getElementById('quickSearchInput').addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') {
+                const q = e.target.value.trim().toUpperCase();
+                // Enter with an exact symbol match opens it immediately, even if the
+                // results dropdown hasn't been tapped - fastest path for a known ticker.
+                const exact = availableSymbols.find(s => s.toUpperCase() === q);
+                if (exact) {
+                    openSymbolOnChart(exact);
+                    e.target.value = '';
+                    document.getElementById('quickSearchResults').style.display = 'none';
+                } else {
+                    // No exact match - open the first (highest-priority) result instead.
+                    const first = document.getElementById('quickSearchResults').firstChild;
+                    if (first) first.click();
+                }
+            } else if (e.key === 'Escape') {
+                e.target.value = '';
+                document.getElementById('quickSearchResults').style.display = 'none';
+            }
+        });
+        document.addEventListener('click', (e) => {
+            if (!document.getElementById('quickSearchWrap').contains(e.target)) {
+                document.getElementById('quickSearchResults').style.display = 'none';
+            }
+        });
 
         window.addEventListener('resize', () => {
             Object.keys(tabs).forEach(tabId => {
