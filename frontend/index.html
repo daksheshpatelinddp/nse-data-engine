@@ -97,6 +97,7 @@
         </div>
 
         <button id="symbolBrowserBtn">&#128193; Symbols</button>
+        <button id="formulaEngineBtn" title="Formula Engine (AFL-lite)" style="font-size:0.85rem; padding:5px 9px;">&fnof;(x)</button>
         <button id="settingsBtn" title="Settings" style="font-size:1rem; padding:5px 9px;">&#9881;</button>
         <div id="statusBadge" class="status-badge status-online">Connecting R2...</div>
     </header>
@@ -262,6 +263,42 @@
         </div>
     </div>
     <input type="file" id="catMgrImportFile" accept=".txt,.tls,.csv" style="display:none;">
+
+    <!-- Formula Engine panel - run built-in or custom AFL-lite formulas against
+         the active tab's symbol. Built-ins and custom formulas go through the
+         exact same runFormula() path - no special-casing, matching AmiBroker's
+         "everything is a formula" architecture. -->
+    <div id="formulaEngineOverlay" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.6); z-index:120; align-items:center; justify-content:center;">
+        <div style="background:var(--bg-panel); border:1px solid var(--border); border-radius:8px; width:min(480px, 94vw); max-height:88vh; overflow-y:auto; padding:16px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                <h2 style="font-size:1.0rem;">Formula Engine</h2>
+                <button id="closeFormulaEngineBtn" style="padding:4px 10px;">&times;</button>
+            </div>
+            <p style="font-size:0.76rem; color:#868a9c; margin-bottom:10px;">
+                Runs against the symbol in your active tab. Built-ins and your own
+                formulas use the same engine - Close/Open/High/Low/Volume are whole
+                arrays; MA(), EMA(), RSI(), MACD(), ADX(), Cross(), Ref() etc. are
+                available. Call Plot(series, name, color, style, pane) to draw -
+                pane 0 = price chart, pane 1 = lower pane.
+            </p>
+
+            <label style="font-size:0.78rem; display:block; margin-bottom:3px;">Load a built-in</label>
+            <select id="formulaBuiltinSelect" style="width:100%; margin-bottom:10px; padding:6px; background:var(--bg-input); color:var(--text-bright); border:1px solid var(--border); border-radius:4px;">
+                <option value="">-- choose to load as a starting point --</option>
+            </select>
+
+            <label style="font-size:0.78rem; display:block; margin-bottom:3px;">Formula</label>
+            <textarea id="formulaText" rows="8" style="width:100%; margin-bottom:10px; padding:6px; background:var(--bg-input); color:var(--text-bright); border:1px solid var(--border); border-radius:4px; font-family:monospace; font-size:0.78rem;" placeholder='Plot(RSI(Close, 14), "My RSI", colorPink, styleLine, 1);'></textarea>
+
+            <div style="display:flex; gap:8px; margin-bottom:8px;">
+                <button id="formulaVerifyBtn" style="flex:1; padding:8px; font-size:0.8rem;">Verify vs existing</button>
+                <button id="formulaPlotBtn" style="flex:1; padding:8px; font-size:0.8rem; background:var(--accent); color:#fff;">Run &amp; Plot</button>
+            </div>
+            <button id="formulaClearBtn" style="width:100%; padding:6px; font-size:0.78rem; margin-bottom:8px;">Clear plotted formula series</button>
+
+            <pre id="formulaStatus" style="font-size:0.74rem; color:#868a9c; white-space:pre-wrap; background:var(--bg-input); border-radius:4px; padding:8px; min-height:20px; margin:0;"></pre>
+        </div>
+    </div>
 
     <!-- Small reusable dialog for creating a new Industry with a real sector
          dropdown (not a prompt()) - e.g. assigning "Financial" sector to a new
@@ -1499,6 +1536,333 @@
         });
 
         // Technical Indicators
+        // ================================================================
+        // FORMULA ENGINE (AFL-lite) - Part E of the roadmap.
+        //
+        // One execution engine for everything: built-in indicators (Price,
+        // Volume, SMA, EMA, BB, RSI, MACD, ADX) and user-written custom
+        // formulas are BOTH just formula text run through this same engine -
+        // matching AmiBroker's actual architecture (every default plot is
+        // itself an AFL formula, not a special-cased function).
+        //
+        // Formulas are plain JS (evaluated via `new Function`), not a custom
+        // parsed language - AFL's own syntax is close enough to JS/C that
+        // this covers the same expressive range without building a bespoke
+        // lexer/parser. Close/Open/High/Low/Volume are provided as whole
+        // arrays (AFL's vectorized style), plus built-in functions below.
+        //
+        // STATUS: newly added, running ALONGSIDE the existing hardcoded
+        // calculateSMA/EMA/BB/RSI functions below - not yet wired into the
+        // live chart buttons. See verifyFormulaEngine() for the numeric
+        // cross-check proving this produces identical output before any
+        // switchover happens.
+        // ================================================================
+
+        function fe_firstValidIndex(arr) {
+            for (let i = 0; i < arr.length; i++) {
+                if (arr[i] !== null && arr[i] !== undefined && !isNaN(arr[i])) return i;
+            }
+            return arr.length;
+        }
+
+        function fe_MA(arr, period) {
+            const out = new Array(arr.length).fill(null);
+            const start = fe_firstValidIndex(arr);
+            for (let i = start + period - 1; i < arr.length; i++) {
+                let sum = 0;
+                for (let j = 0; j < period; j++) sum += arr[i - j];
+                out[i] = sum / period;
+            }
+            return out;
+        }
+
+        function fe_EMA(arr, period) {
+            const out = new Array(arr.length).fill(null);
+            const start = fe_firstValidIndex(arr);
+            const k = 2 / (period + 1);
+            let prevEMA = null;
+            for (let i = start; i < arr.length; i++) {
+                if (i < start + period - 1) continue;
+                if (prevEMA === null) {
+                    let sum = 0;
+                    for (let j = 0; j < period; j++) sum += arr[i - j];
+                    prevEMA = sum / period;
+                } else {
+                    prevEMA = (arr[i] * k) + (prevEMA * (1 - k));
+                }
+                out[i] = prevEMA;
+            }
+            return out;
+        }
+
+        function fe_STDEV(arr, period) {
+            const out = new Array(arr.length).fill(null);
+            const start = fe_firstValidIndex(arr);
+            for (let i = start + period - 1; i < arr.length; i++) {
+                let sum = 0;
+                for (let j = 0; j < period; j++) sum += arr[i - j];
+                const mean = sum / period;
+                let variance = 0;
+                for (let j = 0; j < period; j++) variance += Math.pow(arr[i - j] - mean, 2);
+                out[i] = Math.sqrt(variance / period);
+            }
+            return out;
+        }
+
+        function fe_RSI(arr, period = 14) {
+            const out = new Array(arr.length).fill(null);
+            if (arr.length <= period) return out;
+            let gains = 0, losses = 0;
+            for (let i = 1; i <= period; i++) {
+                const diff = arr[i] - arr[i - 1];
+                if (diff >= 0) gains += diff; else losses += Math.abs(diff);
+            }
+            let avgGain = gains / period, avgLoss = losses / period;
+            let rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+            out[period] = 100 - (100 / (1 + rs));
+            for (let i = period + 1; i < arr.length; i++) {
+                const diff = arr[i] - arr[i - 1];
+                const gain = diff >= 0 ? diff : 0, loss = diff < 0 ? Math.abs(diff) : 0;
+                avgGain = (avgGain * (period - 1) + gain) / period;
+                avgLoss = (avgLoss * (period - 1) + loss) / period;
+                rs = avgLoss === 0 ? 100 : avgGain / avgLoss;
+                out[i] = 100 - (100 / (1 + rs));
+            }
+            return out;
+        }
+
+        function fe_MACD(arr, fast = 12, slow = 26, signalPeriod = 9) {
+            const emaFast = fe_EMA(arr, fast);
+            const emaSlow = fe_EMA(arr, slow);
+            const macdLine = arr.map((_, i) => (emaFast[i] != null && emaSlow[i] != null) ? emaFast[i] - emaSlow[i] : null);
+            const signalLine = fe_EMA(macdLine, signalPeriod);
+            const hist = arr.map((_, i) => (macdLine[i] != null && signalLine[i] != null) ? macdLine[i] - signalLine[i] : null);
+            return { macd: macdLine, signal: signalLine, hist };
+        }
+
+        // Wilder's DMI/ADX - the standard formula (not ported from an existing
+        // function here, since none existed before; this is newly built).
+        function fe_ADX(High, Low, Close, period = 14) {
+            const n = Close.length;
+            const plusDM = new Array(n).fill(0);
+            const minusDM = new Array(n).fill(0);
+            const TR = new Array(n).fill(0);
+            for (let i = 1; i < n; i++) {
+                const upMove = High[i] - High[i - 1];
+                const downMove = Low[i - 1] - Low[i];
+                plusDM[i] = (upMove > downMove && upMove > 0) ? upMove : 0;
+                minusDM[i] = (downMove > upMove && downMove > 0) ? downMove : 0;
+                TR[i] = Math.max(High[i] - Low[i], Math.abs(High[i] - Close[i - 1]), Math.abs(Low[i] - Close[i - 1]));
+            }
+            function wilderSum(arr) {
+                const out = new Array(arr.length).fill(null);
+                if (arr.length <= period) return out;
+                let seed = 0;
+                for (let i = 1; i <= period; i++) seed += arr[i] || 0;
+                out[period] = seed;
+                let prev = seed;
+                for (let i = period + 1; i < arr.length; i++) {
+                    prev = prev - (prev / period) + arr[i];
+                    out[i] = prev;
+                }
+                return out;
+            }
+            const smoothTR = wilderSum(TR), smoothPlusDM = wilderSum(plusDM), smoothMinusDM = wilderSum(minusDM);
+            const plusDI = new Array(n).fill(null), minusDI = new Array(n).fill(null), DX = new Array(n).fill(null);
+            for (let i = period; i < n; i++) {
+                if (smoothTR[i]) {
+                    plusDI[i] = 100 * smoothPlusDM[i] / smoothTR[i];
+                    minusDI[i] = 100 * smoothMinusDM[i] / smoothTR[i];
+                    const diSum = plusDI[i] + minusDI[i];
+                    DX[i] = diSum !== 0 ? 100 * Math.abs(plusDI[i] - minusDI[i]) / diSum : 0;
+                }
+            }
+            const adx = new Array(n).fill(null);
+            const adxSeedIndex = period + period - 1;
+            if (adxSeedIndex < n) {
+                let sum = 0;
+                for (let i = period; i <= adxSeedIndex; i++) sum += DX[i] || 0;
+                adx[adxSeedIndex] = sum / period;
+                for (let i = adxSeedIndex + 1; i < n; i++) {
+                    adx[i] = (adx[i - 1] * (period - 1) + DX[i]) / period;
+                }
+            }
+            return adx;
+        }
+
+        function fe_Ref(arr, n) {
+            const out = new Array(arr.length).fill(null);
+            for (let i = 0; i < arr.length; i++) {
+                const idx = i + n; // AFL convention: Ref(arr,-1) = previous bar
+                out[i] = (idx >= 0 && idx < arr.length) ? arr[idx] : null;
+            }
+            return out;
+        }
+
+        function fe_Cross(a, b) {
+            const out = new Array(a.length).fill(false);
+            for (let i = 1; i < a.length; i++) {
+                if (a[i - 1] != null && b[i - 1] != null && a[i] != null && b[i] != null) {
+                    out[i] = (a[i - 1] <= b[i - 1]) && (a[i] > b[i]);
+                }
+            }
+            return out;
+        }
+
+        function fe_HHV(arr, period) {
+            const out = new Array(arr.length).fill(null);
+            for (let i = period - 1; i < arr.length; i++) {
+                let max = -Infinity;
+                for (let j = 0; j < period; j++) max = Math.max(max, arr[i - j]);
+                out[i] = max;
+            }
+            return out;
+        }
+
+        function fe_LLV(arr, period) {
+            const out = new Array(arr.length).fill(null);
+            for (let i = period - 1; i < arr.length; i++) {
+                let min = Infinity;
+                for (let j = 0; j < period; j++) min = Math.min(min, arr[i - j]);
+                out[i] = min;
+            }
+            return out;
+        }
+
+        function fe_Sum(arr, period) {
+            const out = new Array(arr.length).fill(null);
+            for (let i = period - 1; i < arr.length; i++) {
+                let s = 0;
+                for (let j = 0; j < period; j++) s += arr[i - j];
+                out[i] = s;
+            }
+            return out;
+        }
+
+        // Builds the execution context a formula runs against: OHLCV as whole
+        // arrays (AFL's vectorized style), built-in functions, AFL-style color
+        // and plot-style constants, and a Plot() that collects what to draw
+        // rather than drawing immediately (the engine doesn't know about the
+        // chart library - rendering is a separate step, keeping the engine
+        // reusable later for scanning/backtesting which don't plot at all).
+        function buildFormulaContext(data) {
+            const Close = data.map(d => d.close);
+            const Open = data.map(d => d.open);
+            const High = data.map(d => d.high);
+            const Low = data.map(d => d.low);
+            const Volume = data.map(d => d.volume);
+            const Time = data.map(d => d.time);
+            const plots = [];
+
+            function Plot(series, name, color, style, pane) {
+                plots.push({ series, name, color: color || '#2962ff', style: (style != null ? style : 0), pane: pane || 0 });
+            }
+
+            return {
+                Close, Open, High, Low, Volume, Time,
+                MA: fe_MA, EMA: fe_EMA, STDEV: fe_STDEV, RSI: fe_RSI,
+                MACD: (arr, f, s, sig) => fe_MACD(arr || Close, f, s, sig),
+                ADX: (period) => fe_ADX(High, Low, Close, period),
+                Ref: fe_Ref, Cross: fe_Cross, HHV: fe_HHV, LLV: fe_LLV, Sum: fe_Sum,
+                Plot,
+                colorBlack: '#d1d4dc', colorRed: '#ef5350', colorGreen: '#26a69a', colorBlue: '#2962ff',
+                colorOrange: '#ff9800', colorPurple: '#ab47bc', colorPink: '#e91e63', colorYellow: '#fdd835',
+                styleLine: 0, styleHistogram: 1, styleCandle: 2, styleArea: 3,
+                __plots: plots
+            };
+        }
+
+        // Runs formula text (plain JS, AFL-style API) against one symbol's
+        // loaded bar data. Returns the Plot() calls made, or an error - never
+        // throws, since this will later be called from UI contexts (and
+        // eventually scanning/backtesting) that need to handle bad formulas
+        // gracefully rather than crashing the whole app.
+        function runFormula(formulaText, data) {
+            const ctx = buildFormulaContext(data);
+            const argNames = Object.keys(ctx).filter(k => k !== '__plots');
+            const argValues = argNames.map(k => ctx[k]);
+            try {
+                const fn = new Function(...argNames, formulaText);
+                fn(...argValues);
+                return { success: true, plots: ctx.__plots, error: null };
+            } catch (e) {
+                return { success: false, plots: [], error: e.message };
+            }
+        }
+
+        // Built-in formula library - Price/Volume/SMA/EMA/BB/RSI/MACD/ADX each
+        // expressed AS a formula, not as a special-cased function. This is the
+        // architectural point: these are not different in kind from a formula
+        // a user writes themselves, only pre-written and bundled by default.
+        const BUILTIN_FORMULAS = {
+            'Price (Candles)': 'Plot(Close, "Price", colorBlack, styleCandle);',
+            'Volume': 'Plot(Volume, "Volume", colorBlue, styleHistogram, 1);',
+            'SMA 20': 'Plot(MA(Close, 20), "SMA 20", colorBlue, styleLine);',
+            'EMA 50': 'Plot(EMA(Close, 50), "EMA 50", colorOrange, styleLine);',
+            'Bollinger Bands (20,2)':
+`var mid = MA(Close, 20);
+var sd = STDEV(Close, 20);
+var top = mid.map(function(v, i) { return (v != null && sd[i] != null) ? v + 2 * sd[i] : null; });
+var bot = mid.map(function(v, i) { return (v != null && sd[i] != null) ? v - 2 * sd[i] : null; });
+Plot(top, "BB Top", colorPurple, styleLine);
+Plot(bot, "BB Bottom", colorPurple, styleLine);`,
+            'RSI 14':
+`Plot(RSI(Close, 14), "RSI 14", colorPink, styleLine, 1);`,
+            'MACD (12,26,9)':
+`var m = MACD(Close, 12, 26, 9);
+Plot(m.macd, "MACD", colorBlue, styleLine, 1);
+Plot(m.signal, "Signal", colorOrange, styleLine, 1);
+Plot(m.hist, "Histogram", colorGreen, styleHistogram, 1);`,
+            'ADX 14':
+`Plot(ADX(14), "ADX 14", colorPurple, styleLine, 1);`
+        };
+
+        // Numeric verification: confirms the new engine's SMA/EMA/RSI produce
+        // the SAME values as the existing hardcoded calculateSMA/EMA/RSI, for
+        // whichever symbol is currently loaded. This is the proof-before-swap
+        // step - the live chart buttons are NOT touched until this passes.
+        function verifyFormulaEngine(tabId) {
+            const tab = tabs[tabId];
+            if (!tab || !tab.data || tab.data.length === 0) {
+                return { ok: false, message: 'No data loaded on this tab to verify against.' };
+            }
+            const data = tab.data;
+            const Close = data.map(d => d.close);
+            const lines = [];
+            let allOk = true;
+
+            function compare(label, oldSeries, newArr, timeKey) {
+                // oldSeries: array of {time, value} from the existing hardcoded function
+                // newArr: full-length array (with leading nulls) from the new engine
+                const newByTime = {};
+                data.forEach((d, i) => { if (newArr[i] != null) newByTime[d.time] = newArr[i]; });
+                let maxDiff = 0, compared = 0;
+                oldSeries.forEach(pt => {
+                    const nv = newByTime[pt.time];
+                    if (nv !== undefined) {
+                        maxDiff = Math.max(maxDiff, Math.abs(nv - pt.value));
+                        compared++;
+                    }
+                });
+                const pass = compared > 0 && maxDiff < 0.0001;
+                if (!pass) allOk = false;
+                lines.push(`${pass ? 'PASS' : 'FAIL'} ${label}: compared ${compared} points, max diff ${maxDiff.toFixed(6)}`);
+            }
+
+            compare('SMA 20', calculateSMA(data, 20), fe_MA(Close, 20));
+            compare('EMA 50', calculateEMA(data, 50), fe_EMA(Close, 50));
+            compare('RSI 14', calculateRSI(data, 14), fe_RSI(Close, 14));
+
+            const bb = calculateBollingerBands(data, 20, 2);
+            const mid = fe_MA(Close, 20), sd = fe_STDEV(Close, 20);
+            const feTop = mid.map((v, i) => (v != null && sd[i] != null) ? v + 2 * sd[i] : null);
+            const feBot = mid.map((v, i) => (v != null && sd[i] != null) ? v - 2 * sd[i] : null);
+            compare('Bollinger Top', bb.upper, feTop);
+            compare('Bollinger Bottom', bb.lower, feBot);
+
+            return { ok: allOk, message: lines.join('\n') };
+        }
+
         function calculateSMA(data, period) {
             let res = [];
             for (let i = 0; i < data.length; i++) {
@@ -1701,6 +2065,7 @@
                 lineSeries, rsiSeries: null,
                 data: [],
                 overlays: { sma: null, ema: null, bbUpper: null, bbLower: null },
+                formulaSeries: [], // series created by the Formula Engine's "Run & Plot" - tracked separately so re-running/clearing doesn't leave orphaned series on the chart
                 // Phase 3 Group B: drawing tools. drawMode is null (off) or a tool
                 // name ('trendline'). pendingPoint holds the first tap while a
                 // two-point tool is mid-draw. selectedDrawingId tracks which drawn
@@ -2189,6 +2554,124 @@
                     renderDrawings(tabId); // resize shifts pixel positions - keep drawings anchored
                 }
             });
+        });
+
+        // ---- Formula Engine UI wiring ----
+        function populateFormulaBuiltinSelect() {
+            const sel = document.getElementById('formulaBuiltinSelect');
+            sel.innerHTML = '<option value="">-- choose to load as a starting point --</option>';
+            Object.keys(BUILTIN_FORMULAS).forEach(name => {
+                const opt = document.createElement('option');
+                opt.value = name; opt.textContent = name;
+                sel.appendChild(opt);
+            });
+        }
+
+        document.getElementById('formulaEngineBtn').addEventListener('click', () => {
+            document.getElementById('formulaEngineOverlay').style.display = 'flex';
+            document.getElementById('formulaStatus').textContent = activeTabId
+                ? `Active tab: ${tabs[activeTabId] ? tabs[activeTabId].symbol : '(none)'}`
+                : 'No active tab - open a chart first.';
+            populateFormulaBuiltinSelect();
+        });
+
+        document.getElementById('closeFormulaEngineBtn').addEventListener('click', () => {
+            document.getElementById('formulaEngineOverlay').style.display = 'none';
+        });
+        document.getElementById('formulaEngineOverlay').addEventListener('click', (e) => {
+            if (e.target.id === 'formulaEngineOverlay') document.getElementById('formulaEngineOverlay').style.display = 'none';
+        });
+
+        document.getElementById('formulaBuiltinSelect').addEventListener('change', (e) => {
+            const name = e.target.value;
+            if (name && BUILTIN_FORMULAS[name]) {
+                document.getElementById('formulaText').value = BUILTIN_FORMULAS[name];
+            }
+        });
+
+        document.getElementById('formulaVerifyBtn').addEventListener('click', () => {
+            const status = document.getElementById('formulaStatus');
+            if (!activeTabId || !tabs[activeTabId]) {
+                status.textContent = 'No active tab - open a chart first.';
+                return;
+            }
+            const result = verifyFormulaEngine(activeTabId);
+            status.textContent = (result.ok ? 'ALL CHECKS PASSED\n\n' : 'SOME CHECKS FAILED\n\n') + result.message;
+        });
+
+        // Removes whatever the Formula Engine previously plotted on this tab,
+        // before plotting again - prevents re-running (or running a different
+        // formula) from stacking duplicate series on top of each other.
+        function clearFormulaSeries(tabId) {
+            const tab = tabs[tabId];
+            if (!tab) return;
+            tab.formulaSeries.forEach(({ chart, series }) => {
+                try { chart.removeSeries(series); } catch (e) { /* already gone */ }
+            });
+            tab.formulaSeries = [];
+        }
+
+        document.getElementById('formulaClearBtn').addEventListener('click', () => {
+            const status = document.getElementById('formulaStatus');
+            if (!activeTabId || !tabs[activeTabId]) {
+                status.textContent = 'No active tab.';
+                return;
+            }
+            clearFormulaSeries(activeTabId);
+            status.textContent = 'Cleared plotted formula series from the active tab.';
+        });
+
+        document.getElementById('formulaPlotBtn').addEventListener('click', () => {
+            const status = document.getElementById('formulaStatus');
+            if (!activeTabId || !tabs[activeTabId]) {
+                status.textContent = 'No active tab - open a chart first.';
+                return;
+            }
+            const tab = tabs[activeTabId];
+            if (!tab.data || tab.data.length === 0) {
+                status.textContent = 'No data loaded on the active tab yet.';
+                return;
+            }
+            const formulaText = document.getElementById('formulaText').value;
+            if (!formulaText.trim()) {
+                status.textContent = 'Enter a formula first (or load a built-in above).';
+                return;
+            }
+
+            const result = runFormula(formulaText, tab.data);
+            if (!result.success) {
+                status.textContent = 'FORMULA ERROR:\n' + result.error;
+                return;
+            }
+
+            clearFormulaSeries(activeTabId);
+
+            let plotted = 0, skipped = 0;
+            result.plots.forEach(p => {
+                // style: 0=line, 1=histogram, 2=candle, 3=area. Candle is skipped for
+                // custom plots - the base chart already renders candles/line for price
+                // itself; a formula re-plotting Close as candles would just duplicate it.
+                const chart = p.pane === 1 ? tab.lowerChart : tab.upperChart;
+                const seriesData = tab.data.map((d, i) => ({ time: d.time, value: p.series[i] }))
+                                            .filter(pt => pt.value !== null && pt.value !== undefined && !isNaN(pt.value));
+                if (seriesData.length === 0) { skipped++; return; }
+
+                let series;
+                if (p.style === 1) {
+                    series = chart.addHistogramSeries({ color: p.color });
+                } else if (p.style === 3) {
+                    series = chart.addAreaSeries({ lineColor: p.color, topColor: p.color + '55', bottomColor: p.color + '05' });
+                } else if (p.style === 2) {
+                    skipped++; return; // candle style - see note above
+                } else {
+                    series = chart.addLineSeries({ color: p.color, lineWidth: 2, title: p.name });
+                }
+                series.setData(seriesData);
+                tab.formulaSeries.push({ chart, series });
+                plotted++;
+            });
+
+            status.textContent = `Plotted ${plotted} series` + (skipped > 0 ? ` (${skipped} skipped - see notes)` : '') + '.';
         });
 
         // Initialize application
