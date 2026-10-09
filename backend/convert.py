@@ -63,6 +63,7 @@ def convert_and_upload(db_files):
                   AND UPPER(TRIM(symbol)) NOT IN ({placeholders})
                   AND close IS NOT NULL AND close > 0
                   AND open IS NOT NULL AND open > 0
+                ORDER BY symbol, date
                 """.format(placeholders=",".join("?" * len(NON_TICKER_SYMBOLS))),
                 conn,
                 params=NON_TICKER_SYMBOLS
@@ -76,8 +77,11 @@ def convert_and_upload(db_files):
             parquet_filename = f"{year_str}.parquet"
 
             # Convert to compressed Parquet format
-            table = pa.Table.from_pandas(df)
-            pq.write_table(table, parquet_filename, compression='snappy')
+            # Rows are sorted by (symbol, date) and written in small row groups, so the
+            # app (DuckDB) can fetch just one stock's rows instead of the whole file.
+            df = df.sort_values(["symbol", "date"]).reset_index(drop=True)
+            table = pa.Table.from_pandas(df, preserve_index=False)
+            pq.write_table(table, parquet_filename, compression='snappy', row_group_size=5000)
 
             # Upload directly to R2 bucket
             print(f"Uploading {parquet_filename} to Cloudflare R2...")
