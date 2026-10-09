@@ -6,11 +6,11 @@ on:
   workflow_dispatch:
     inputs:
       start_date:
-        description: 'Start Date (YYYY-MM-DD) - only used for manual runs'
+        description: 'Start Date (YYYY-MM-DD) - leave default or set specific date'
         required: false
         default: '2000-01-01'
       end_date:
-        description: 'End Date (YYYY-MM-DD)'
+        description: 'End Date (YYYY-MM-DD) - leave empty for today'
         required: false
         default: ''
       run_ca_backfill:
@@ -78,14 +78,22 @@ jobs:
           if [ -n "$LAST_DATE" ]; then
             START=$(date -d "$LAST_DATE + 1 day" +%Y-%m-%d)
           else
-            START=$(date -d '1 day ago' +%Y-%m-%d)
+            START=$(date +%Y-%m-%d)
           fi
-          END=$(date -d '1 day ago' +%Y-%m-%d)
+          END=$(date +%Y-%m-%d)
           echo "start_date=$START" >> "$GITHUB_OUTPUT"
           echo "end_date=$END" >> "$GITHUB_OUTPUT"
         else
-          echo "start_date=${{ github.event.inputs.start_date }}" >> "$GITHUB_OUTPUT"
-          echo "end_date=${{ github.event.inputs.end_date }}" >> "$GITHUB_OUTPUT"
+          START_INPUT="${{ github.event.inputs.start_date }}"
+          END_INPUT="${{ github.event.inputs.end_date }}"
+
+          # If end_date is omitted during manual run, default to today
+          if [ -z "$END_INPUT" ]; then
+            END_INPUT=$(date +%Y-%m-%d)
+          fi
+
+          echo "start_date=$START_INPUT" >> "$GITHUB_OUTPUT"
+          echo "end_date=$END_INPUT" >> "$GITHUB_OUTPUT"
         fi
 
     - name: Run Fetcher Script
