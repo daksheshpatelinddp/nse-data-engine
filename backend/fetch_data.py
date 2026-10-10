@@ -261,6 +261,17 @@ def parse_bhavcopy(df, date_str, url):
         return None, (f"no series column (SCTYSRS/SERIES) found in {url} - refusing to insert "
                       f"unfiltered rows, columns were: {list(df.columns)[:15]}")
 
+    # Safety: every NSE file states its own trading date (DATE1 / TradDt / TIMESTAMP). Never
+    # store a file under a different day than it is for (e.g. if NSE ever served the latest
+    # file for a holiday, that day would otherwise be duplicated).
+    date_col = _pick(df, "DATE1", "TRADDT", "TIMESTAMP")
+    if date_col is not None:
+        parsed = pd.to_datetime(date_col.astype(str).str.strip(), errors="coerce").dropna()
+        if len(parsed):
+            file_date = parsed.mode().iloc[0].strftime("%Y-%m-%d")
+            if file_date != date_str:
+                return None, f"file is dated {file_date} but {date_str} was requested ({url})"
+
     out = pd.DataFrame({
         "symbol": symbol.astype(str).str.strip(),
         "series": series.astype(str).str.strip().str.upper(),
