@@ -65,6 +65,55 @@ try:
 except ValueError:
     REQUEST_DELAY = 0.2
 
+# Weekend handling. Saturdays and Sundays are NOT downloaded, except:
+#   1. dates listed in data/special_sessions.txt (Muhurat trading, Budget-day sessions, special
+#      live sessions) - one date per line, YYYY-MM-DD, text after # is ignored;
+#   2. weekend days of the last RECENT_WEEKEND_DAYS days, so a brand-new special session is
+#      picked up by the daily run without editing the list (the file's own date is always checked);
+#   3. every weekend day, only when WEEKEND_MODE=all (a one-off "discover" run).
+SPECIAL_SESSIONS_FILE = os.getenv("SPECIAL_SESSIONS_FILE", "data/special_sessions.txt")
+WEEKEND_MODE = os.getenv("WEEKEND_MODE", "").strip().lower()      # "" or "all"
+try:
+    RECENT_WEEKEND_DAYS = int(os.getenv("RECENT_WEEKEND_DAYS", "10") or 10)
+except ValueError:
+    RECENT_WEEKEND_DAYS = 10
+
+
+def load_special_sessions(path=None):
+    """Reads the list of weekend/holiday session dates. Returns a set of YYYY-MM-DD strings."""
+    path = path or SPECIAL_SESSIONS_FILE
+    dates = set()
+    if not os.path.exists(path):
+        return dates
+    formats = ("%Y-%m-%d", "%d-%m-%Y", "%d/%m/%Y", "%d-%b-%Y", "%d %b %Y")
+    with open(path, encoding="utf-8-sig") as f:      # utf-8-sig: ignores the hidden marker some phone editors add
+        for n, line in enumerate(f, 1):
+            text = line.split("#", 1)[0].strip()
+            if not text:
+                continue
+            for fmt in formats:
+                try:
+                    dates.add(datetime.strptime(text, fmt).strftime("%Y-%m-%d"))
+                    break
+                except ValueError:
+                    continue
+            else:
+                print(f"[WARNING] {path} line {n}: could not read the date '{text}' (use YYYY-MM-DD)")
+    return dates
+
+
+SPECIAL_SESSIONS = load_special_sessions()
+
+
+def weekend_allowed(date_str, today=None):
+    """True if this Saturday/Sunday should be downloaded."""
+    if WEEKEND_MODE == "all" or date_str in SPECIAL_SESSIONS:
+        return True
+    today = today or datetime.now().date()
+    age = (today - datetime.strptime(date_str, "%Y-%m-%d").date()).days
+    return age <= RECENT_WEEKEND_DAYS
+
+
 # Three file types, tried in this order for every date. Only the first has delivery data.
 URL_FULL  = "https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_{ddmmyyyy}.csv"
 URL_UDIFF = "https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{yyyymmdd}_F_0000.csv.zip"
@@ -136,9 +185,8 @@ def close_all_databases():
 def generate_date_range(start_date_str):
     """Generates ALL calendar dates from start_date_str to target end date.
 
-    Weekends are included on purpose: NSE holds special sessions on Saturdays/Sundays
-    (Diwali Muhurat trading, Budget day, special live sessions). Days with no file on
-    NSE (ordinary weekends and holidays) are simply skipped, quietly for weekends.
+    Saturdays and Sundays are in this list, but the download loop only fetches the ones that
+    weekend_allowed() accepts (listed special sessions, the last few days, or WEEKEND_MODE=all).
     """
     try:
         start = datetime.strptime(start_date_str, "%Y-%m-%d")
@@ -414,6 +462,7 @@ def fetch_nse_bhavcopy_range(start_date=START_DATE, date_list=None):
     except Exception as e:
         print(f"[WARNING] Session setup issue: {e}")
 
+    date_list_was_default = date_list is None     # explicit date lists (targeted fetches) are always honoured
     if date_list is None:
         date_list = generate_date_range(start_date)
         print(f"[PHASE 1 START] Downloading and storing Bhavcopies from {start_date} to present "
@@ -424,7 +473,7 @@ def fetch_nse_bhavcopy_range(start_date=START_DATE, date_list=None):
     total_added = 0
     weekend_sessions = []
     stats = {"full": 0, "udiff": 0, "old": 0, "failed_weekday": 0,
-             "delivery_filled": 0, "delivery_unavailable": 0}
+             "delivery_filled": 0, "delivery_unavailable": 0, "weekends_skipped": 0}
 
     for date_str in date_list:
         year_str = date_str[:4]
@@ -432,6 +481,9 @@ def fetch_nse_bhavcopy_range(start_date=START_DATE, date_list=None):
         cursor = conn.cursor()
         dt = datetime.strptime(date_str, "%Y-%m-%d")
         is_weekend = dt.weekday() >= 5
+        if is_weekend and date_list_was_default and not weekend_allowed(date_str):
+            stats["weekends_skipped"] += 1
+            continue
 
         cursor.execute(
             "SELECT COUNT(*), SUM(CASE WHEN close > 0 THEN 1 ELSE 0 END), "
@@ -491,7 +543,8 @@ def fetch_nse_bhavcopy_range(start_date=START_DATE, date_list=None):
     close_all_databases()
     print(f"[PHASE 1 COMPLETE] Added {total_added} new records. "
           f"Files used: full={stats['full']}, udiff={stats['udiff']}, old={stats['old']}; "
-          f"weekday failures={stats['failed_weekday']}; "
+          f"weekday failures={stats['failed_weekday']}; weekend days skipped={stats['weekends_skipped']} "
+          f"(listed special sessions: {len(SPECIAL_SESSIONS)}); "
           f"weekend/special sessions found={len(weekend_sessions)} {weekend_sessions[:30]}")
     if DELIVERY_BACKFILL:
         print(f"[DELIVERY BACKFILL] days filled={stats['delivery_filled']}, "
