@@ -17,6 +17,14 @@ on:
         description: 'Also backfill historical corporate-action dates (slow, one-time; leave unchecked for normal runs)'
         type: boolean
         default: false
+      delivery_backfill:
+        description: 'Fill delivery quantity for days already stored without it (slow, one-time; prices are not touched)'
+        type: boolean
+        default: false
+      probe:
+        description: 'Only test which NSE file types exist for sample dates 2000-today (changes nothing)'
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -94,6 +102,8 @@ jobs:
         START_DATE: ${{ steps.dates.outputs.start_date || '2000-01-01' }}
         END_DATE: ${{ steps.dates.outputs.end_date || '' }}
         RUN_CA_BACKFILL: ${{ github.event.inputs.run_ca_backfill || 'false' }}
+        DELIVERY_BACKFILL: ${{ github.event.inputs.delivery_backfill || 'false' }}
+        PROBE: ${{ github.event.inputs.probe || 'false' }}
 
     - name: Commit and Push Updated Databases
       run: |
