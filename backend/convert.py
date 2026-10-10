@@ -1,4 +1,6 @@
 import os
+import re
+import sys
 import glob
 import datetime
 import sqlite3
@@ -24,6 +26,9 @@ s3_client = boto3.client(
     region_name="auto"
 )
 
+FAILED = []   # years that did not convert/upload
+DONE = []     # (year, rows, MB, row_groups) for the summary
+
 def convert_and_upload(db_files):
     current_year = str(datetime.datetime.now().year)
 
@@ -31,8 +36,13 @@ def convert_and_upload(db_files):
         if not os.path.exists(db_file):
             continue
 
-        # Extract year digits from filename (e.g., nse_2000.db -> 2000)
-        year_str = "".join(filter(str.isdigit, db_file))
+        # File name pattern: <database>_<year>.db, e.g. nse_2000.db -> database "nse", year 2000.
+        # Each database gets its own folder on R2:  nse/2000.parquet, bse/2000.parquet, ...
+        m = re.match(r"^([A-Za-z0-9]+)_(\d{4})\.db$", os.path.basename(db_file))
+        if not m:
+            print(f"Skipping {db_file}: name must look like <database>_<year>.db")
+            continue
+        db_id, year_str = m.group(1).lower(), m.group(2)
 
         # DAILY AUTOMATED RUN: Only updates current year (e.g., 2026.parquet)
         # MANUAL RUN: Converts every discovered database year from 2000 to present
@@ -56,7 +66,7 @@ def convert_and_upload(db_files):
             NON_TICKER_SYMBOLS = ('NSE', 'BSE', 'NIFTY', 'NIFTY 50', 'SENSEX')
             df = pd.read_sql_query(
                 """
-                SELECT symbol, date, open, high, low, close, volume
+                SELECT symbol, date, open, high, low, close, volume, delivery
                 FROM ohlcv
                 WHERE is_index = 0
                   AND symbol IS NOT NULL AND TRIM(symbol) <> ''
@@ -74,7 +84,12 @@ def convert_and_upload(db_files):
                 print(f"Skipping {db_file}: 'ohlcv' table is empty.")
                 continue
 
-            parquet_filename = f"{year_str}.parquet"
+            # Delivery quantity is NULL for days NSE has no delivery file for. Store it as a
+            # plain number column (NaN = missing) so the file always has the same layout.
+            df["delivery"] = pd.to_numeric(df["delivery"], errors="coerce").astype("float64")
+
+            parquet_filename = f"{db_id}_{year_str}.parquet"   # temporary local name
+            r2_key = f"{db_id}/{year_str}.parquet"               # name inside the bucket
 
             # Convert to compressed Parquet format
             # Rows are sorted by (symbol, date) and written in small row groups, so the
@@ -83,25 +98,40 @@ def convert_and_upload(db_files):
             table = pa.Table.from_pandas(df, preserve_index=False)
             pq.write_table(table, parquet_filename, compression='snappy', row_group_size=5000)
 
+            size_mb = os.path.getsize(parquet_filename) / 1048576
+            n_groups = pq.ParquetFile(parquet_filename).num_row_groups
+
             # Upload directly to R2 bucket
-            print(f"Uploading {parquet_filename} to Cloudflare R2...")
-            s3_client.upload_file(parquet_filename, BUCKET_NAME, parquet_filename)
+            print(f"Uploading {parquet_filename} to Cloudflare R2 as {r2_key}...")
+            s3_client.upload_file(parquet_filename, BUCKET_NAME, r2_key)
 
             # Cleanup local temporary file
             os.remove(parquet_filename)
-            print(f"Successfully converted and uploaded {parquet_filename}!")
+            print(f"Successfully converted and uploaded {r2_key}!")
+            DONE.append((f"{db_id}/{year_str}", len(df), round(size_mb, 1), n_groups))
 
         except Exception as e:
             print(f"Error processing {db_file}: {e}")
+            FAILED.append(f"{db_id}/{year_str}")
 
 if __name__ == "__main__":
-    # Automatically finds all nse_YYYY.db files present in the repo
+    # Automatically finds every <database>_<year>.db file in the repo (nse_2026.db, bse_2026.db, ...)
     # (see docs/repo_structure.md - database files live under data/databases/)
     DB_DIR = "data/databases"
-    db_list = sorted(glob.glob(os.path.join(DB_DIR, "nse_*.db")))
-    
+    db_list = sorted(glob.glob(os.path.join(DB_DIR, "*_[0-9][0-9][0-9][0-9].db")))
+
     if not db_list:
-        print("No database files matching pattern 'nse_*.db' found.")
+        print("No database files matching pattern '<database>_<year>.db' found.")
     else:
         print(f"Discovered databases: {db_list}")
         convert_and_upload(db_list)
+
+    print("\n===== SUMMARY =====")
+    for year, rows, mb, groups in DONE:
+        print(f"OK     {year}: {rows} rows, {mb} MB, {groups} row groups")
+    for year in FAILED:
+        print(f"FAILED {year}")
+    if not DONE and not FAILED:
+        print("Nothing was converted (no matching database file / current year only).")
+    if FAILED:
+        sys.exit(1)  # makes the GitHub run show a red cross instead of a green tick

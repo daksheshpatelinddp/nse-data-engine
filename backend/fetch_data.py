@@ -5,6 +5,7 @@ import glob
 import json
 import zipfile
 import sqlite3
+import time
 import pandas as pd
 import requests
 from datetime import datetime, timedelta
@@ -48,6 +49,28 @@ HEADERS = {
 
 db_connections = {}
 
+# ---- New options (all can be set from the GitHub "Run workflow" form) ----
+# DELIVERY_BACKFILL: for days already stored WITHOUT delivery data, download NSE's full
+#   bhavcopy and fill in only the delivery column (prices are never touched).
+# PROBE: do not touch any database; just report which NSE file types exist for sample
+#   dates from 2000 to today, so you can see how far back each source goes.
+# REQUEST_DELAY: pause (seconds) after every NSE request, to be polite and avoid blocking.
+def _flag(name):
+    return os.getenv(name, "").strip().lower() in ("1", "true", "yes")
+
+DELIVERY_BACKFILL = _flag("DELIVERY_BACKFILL")
+PROBE = _flag("PROBE")
+try:
+    REQUEST_DELAY = float(os.getenv("REQUEST_DELAY", "0.2") or 0.2)
+except ValueError:
+    REQUEST_DELAY = 0.2
+
+# Three file types, tried in this order for every date. Only the first has delivery data.
+URL_FULL  = "https://nsearchives.nseindia.com/products/content/sec_bhavdata_full_{ddmmyyyy}.csv"
+URL_UDIFF = "https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{yyyymmdd}_F_0000.csv.zip"
+URL_OLD   = "https://archives.nseindia.com/content/historical/EQUITIES/{year}/{mon}/cm{dd}{mon}{year}bhav.csv.zip"
+URL_MTO   = "https://nsearchives.nseindia.com/archives/equities/mto/MTO_{ddmmyyyy}.DAT"  # probe only
+
 def get_db_connection(year_str):
     """Returns or creates a connection for a specific yearly SQLite database file safely."""
     db_name = os.path.join(DB_DIR, f"nse_{year_str}.db")
@@ -75,6 +98,7 @@ def get_db_connection(year_str):
                 close REAL,
                 volume INTEGER,
                 is_index INTEGER DEFAULT 0,
+                delivery INTEGER,
                 PRIMARY KEY (symbol, date)
             )
         ''')
@@ -89,6 +113,10 @@ def get_db_connection(year_str):
                 PRIMARY KEY (symbol, ex_date, action_type)
             )
         ''')
+        # Databases created before delivery support: add the column once.
+        existing_cols = [r[1] for r in cursor.execute("PRAGMA table_info(ohlcv)").fetchall()]
+        if "delivery" not in existing_cols:
+            cursor.execute("ALTER TABLE ohlcv ADD COLUMN delivery INTEGER")
         conn.commit()
         db_connections[db_name] = conn
     return db_connections[db_name]
@@ -106,7 +134,12 @@ def close_all_databases():
 
 
 def generate_date_range(start_date_str):
-    """Generates weekday date strings from start_date_str to target end date."""
+    """Generates ALL calendar dates from start_date_str to target end date.
+
+    Weekends are included on purpose: NSE holds special sessions on Saturdays/Sundays
+    (Diwali Muhurat trading, Budget day, special live sessions). Days with no file on
+    NSE (ordinary weekends and holidays) are simply skipped, quietly for weekends.
+    """
     try:
         start = datetime.strptime(start_date_str, "%Y-%m-%d")
     except ValueError:
@@ -122,8 +155,7 @@ def generate_date_range(start_date_str):
     date_list = []
     current = start
     while current <= target_end:
-        if current.weekday() < 5:  # Monday to Friday
-            date_list.append(current.strftime("%Y-%m-%d"))
+        date_list.append(current.strftime("%Y-%m-%d"))
         current += timedelta(days=1)
 
     return date_list
@@ -182,11 +214,186 @@ def fetch_targeted_dates_for_corporate_actions():
 # PHASE 1: DOWNLOAD AND STORE BASE DATA
 # ==========================================
 
+def _norm(c):
+    return re.sub(r"[^A-Z0-9]", "", str(c).upper())
+
+
+def _pick(df, *names):
+    """First matching column, ignoring case, spaces and underscores (None if absent)."""
+    lookup = {}
+    for c in df.columns:
+        lookup.setdefault(_norm(c), c)
+    for n in names:
+        key = _norm(n)
+        if key in lookup:
+            return df[lookup[key]]
+    return None
+
+
+def _num(series):
+    """Text/number column -> numbers; '-', blanks and junk become NaN."""
+    s = series.astype(str).str.strip()
+    s = s.mask(s.isin(["-", "", "nan", "None", "NaN"]))
+    return pd.to_numeric(s, errors="coerce")
+
+
+def _f(x):
+    return None if pd.isna(x) else float(x)
+
+
+def _i(x):
+    return None if pd.isna(x) else int(x)
+
+
+def parse_bhavcopy(df, date_str, url):
+    """Turns any of the three NSE file layouts into one tidy table.
+
+    Returns (table, error). Columns: symbol, date, open, high, low, close, volume,
+    is_index, delivery. Only EQ and BE series are kept (as before).
+    """
+    symbol = _pick(df, "TCKRSYMB", "SYMBOL")
+    series = _pick(df, "SCTYSRS", "SERIES")
+    if symbol is None:
+        return None, f"no symbol column found in {url}"
+    # An undetected series column must never mean "accept every row" (index/summary rows
+    # would slip in as tradable equities), so treat it as a parse failure for this day.
+    if series is None:
+        return None, (f"no series column (SCTYSRS/SERIES) found in {url} - refusing to insert "
+                      f"unfiltered rows, columns were: {list(df.columns)[:15]}")
+
+    out = pd.DataFrame({
+        "symbol": symbol.astype(str).str.strip(),
+        "series": series.astype(str).str.strip().str.upper(),
+    })
+    fields = {
+        "open":   ("OPNPRIC", "OPEN_PRICE", "OPEN"),
+        "high":   ("HGHPRIC", "HIGH_PRICE", "HIGH"),
+        "low":    ("LWPRIC", "LOW_PRICE", "LOW"),
+        "close":  ("CLSPRIC", "CLOSE_PRICE", "CLOSE"),
+        "volume": ("TTLTRADGVOL", "TTL_TRD_QNTY", "TOTTRDQTY"),
+    }
+    for name, candidates in fields.items():
+        col = _pick(df, *candidates)
+        out[name] = _num(col) if col is not None else float("nan")
+    deliv = _pick(df, "DELIV_QTY")
+    out["delivery"] = _num(deliv) if deliv is not None else float("nan")
+
+    out = out[out["series"].isin(["EQ", "BE"])].copy()
+    out["date"] = date_str
+    out["is_index"] = 0
+
+    # Sanity check: a day where every close is 0/null means we did not recognise the columns.
+    if len(out) > 0 and (out["close"].fillna(0) > 0).sum() == 0:
+        return None, (f"parsed {len(out)} rows from {url} but every close price is 0/null - "
+                      f"unrecognized column format, columns were: {list(df.columns)[:15]}")
+    return out[["symbol", "date", "open", "high", "low", "close", "volume", "is_index", "delivery"]], None
+
+
+def _http_get(session, url):
+    """GET with one retry on network errors (404 and other HTTP answers are not retried)."""
+    last = None
+    for attempt in range(2):
+        try:
+            res = session.get(url, timeout=20)
+            time.sleep(REQUEST_DELAY)
+            return res
+        except Exception as e:
+            last = e
+            time.sleep(1)
+    raise last
+
+
+def fetch_day(session, dt, date_str, only_full=False):
+    """Downloads one day. Returns (table, source, last_error).
+
+    source is 'full' (has delivery), 'udiff' or 'old' (no delivery).
+    """
+    ctx = {
+        "ddmmyyyy": dt.strftime("%d%m%Y"), "yyyymmdd": dt.strftime("%Y%m%d"),
+        "year": dt.strftime("%Y"), "mon": dt.strftime("%b").upper(), "dd": dt.strftime("%d"),
+    }
+    sources = [("full", URL_FULL.format(**ctx))]
+    if not only_full:
+        sources += [("udiff", URL_UDIFF.format(**ctx)), ("old", URL_OLD.format(**ctx))]
+
+    last_error = None
+    for label, url in sources:
+        try:
+            res = _http_get(session, url)
+            if res.status_code != 200:
+                last_error = f"HTTP {res.status_code} from {url}"
+                continue
+            if label == "full":
+                df = pd.read_csv(io.StringIO(res.text), skipinitialspace=True)
+            else:
+                with zipfile.ZipFile(io.BytesIO(res.content)) as z:
+                    with z.open(z.namelist()[0]) as f:
+                        df = pd.read_csv(f, skipinitialspace=True)
+            table, err = parse_bhavcopy(df, date_str, url)
+            if err:
+                last_error = err
+                continue
+            return table, label, None
+        except Exception as e:
+            last_error = f"{type(e).__name__}: {e} ({url})"
+            continue
+    return None, None, last_error
+
+
+def apply_recorded_adjustments(conn, date_str):
+    """Adjusts freshly inserted RAW prices of one date for corporate actions already
+    recorded in this database (ex-date after that date), the same way every older row
+    was adjusted.
+
+    Why this is needed: a corporate action is applied to a database only once (that is
+    the double-adjustment guard in apply_factor_across_all_dbs). Rows added AFTERWARDS
+    - an old Muhurat/weekend session, a repaired day - would otherwise stay raw and show
+    a price jump next to their adjusted neighbours. Volume and delivery are not adjusted,
+    exactly like volume has always been.
+    """
+    cur = conn.cursor()
+    actions = cur.execute(
+        "SELECT symbol, ex_date, ratio FROM corporate_actions WHERE ex_date > ? ORDER BY ex_date",
+        (date_str,)
+    ).fetchall()
+    touched = 0
+    for symbol, ex_date, factor in actions:
+        if factor is None or factor <= 0 or factor == 1:
+            continue
+        cur.execute(
+            "UPDATE ohlcv SET open = ROUND(open * ?, 2), high = ROUND(high * ?, 2), "
+            "low = ROUND(low * ?, 2), close = ROUND(close * ?, 2) "
+            "WHERE symbol = ? COLLATE NOCASE AND date = ? AND is_index = 0",
+            (factor, factor, factor, factor, symbol, date_str)
+        )
+        touched += cur.rowcount
+    conn.commit()
+    return touched
+
+
+def backfill_delivery_for_date(session, dt, date_str, conn):
+    """Fills ONLY the delivery column of a day that is already stored. Returns rows updated
+    (None if NSE has no full file for that day)."""
+    table, source, err = fetch_day(session, dt, date_str, only_full=True)
+    if table is None:
+        return None
+    table = table.dropna(subset=["delivery"]).drop_duplicates("symbol", keep="last")
+    rows = [(_i(r.delivery), r.symbol, date_str) for r in table.itertuples(index=False)]
+    cur = conn.cursor()
+    cur.executemany("UPDATE ohlcv SET delivery = ? WHERE symbol = ? AND date = ?", rows)
+    conn.commit()
+    return len(rows)
+
+
 def fetch_nse_bhavcopy_range(start_date=START_DATE, date_list=None):
-    """Downloads daily Bhavcopies and stores all raw OHLCV data into DB files first.
+    """Downloads daily Bhavcopies and stores the raw OHLCV + delivery data into DB files.
+
+    Source order per day: NSE full bhavcopy with delivery (sec_bhavdata_full), then the
+    plain UDiFF bhavcopy, then the old-format bhavcopy (those two have no delivery).
+    Every calendar day is tried; weekends/holidays without a file are skipped quietly,
+    so Muhurat and other special Saturday/Sunday sessions are picked up automatically.
 
     If date_list is given, only those specific dates are fetched (targeted mode).
-    Otherwise every weekday from start_date to today is fetched (full backfill mode).
     """
     session = requests.Session()
     session.headers.update(HEADERS)
@@ -198,125 +405,117 @@ def fetch_nse_bhavcopy_range(start_date=START_DATE, date_list=None):
 
     if date_list is None:
         date_list = generate_date_range(start_date)
-        print(f"[PHASE 1 START] Downloading and storing Bhavcopies from {start_date} to present...")
+        print(f"[PHASE 1 START] Downloading and storing Bhavcopies from {start_date} to present "
+              f"({len(date_list)} calendar days)...")
     else:
         print(f"[PHASE 1 START] Downloading and storing Bhavcopies for {len(date_list)} targeted date(s)...")
 
     total_added = 0
+    weekend_sessions = []
+    stats = {"full": 0, "udiff": 0, "old": 0, "failed_weekday": 0,
+             "delivery_filled": 0, "delivery_unavailable": 0}
 
     for date_str in date_list:
         year_str = date_str[:4]
         conn = get_db_connection(year_str)
         cursor = conn.cursor()
+        dt = datetime.strptime(date_str, "%Y-%m-%d")
+        is_weekend = dt.weekday() >= 5
 
-        # Skip only if a full daily trading set is already stored AND the prices are
-        # real (not the zero-price corruption from a column-name mismatch). This lets
-        # a re-run automatically repair previously-corrupted dates via INSERT OR
-        # REPLACE, without needing a separate manual cleanup pass.
         cursor.execute(
-            "SELECT COUNT(*), SUM(CASE WHEN close > 0 THEN 1 ELSE 0 END) FROM ohlcv WHERE date = ?",
+            "SELECT COUNT(*), SUM(CASE WHEN close > 0 THEN 1 ELSE 0 END), "
+            "SUM(CASE WHEN delivery IS NOT NULL THEN 1 ELSE 0 END) FROM ohlcv WHERE date = ?",
             (date_str,)
         )
-        total_rows, nonzero_rows = cursor.fetchone()
-        if total_rows and total_rows > 500 and nonzero_rows and nonzero_rows > 100:
+        total_rows, nonzero_rows, with_delivery = cursor.fetchone()
+        total_rows = total_rows or 0
+        nonzero_rows = nonzero_rows or 0
+        with_delivery = with_delivery or 0
+
+        # Already stored? A weekday needs a full trading set with real prices (so a re-run can
+        # still repair corrupted days). A weekend/special session may legitimately be small, so
+        # any real priced rows count as stored - never overwrite them with raw prices again.
+        full_day = total_rows > 500 and nonzero_rows > 100
+        special_day_stored = is_weekend and nonzero_rows >= 1
+        if full_day or special_day_stored:
+            if DELIVERY_BACKFILL and with_delivery == 0:
+                n = backfill_delivery_for_date(session, dt, date_str, conn)
+                if n is None:
+                    stats["delivery_unavailable"] += 1
+                else:
+                    stats["delivery_filled"] += 1
+                    print(f"[DELIVERY] {date_str}: delivery filled for {n} rows")
             continue
 
-        dt = datetime.strptime(date_str, "%Y-%m-%d")
-        year = dt.strftime("%Y")
-        month = dt.strftime("%b").upper()
-        day_str = dt.strftime("%d")
-        date_udiff = dt.strftime("%Y%m%d")
+        table, source, last_error = fetch_day(session, dt, date_str)
+        if table is None:
+            if not is_weekend:  # ordinary weekends have no file: stay quiet
+                stats["failed_weekday"] += 1
+                print(f"[FETCH FAILED] {date_str}: all file types failed. Last error: {last_error}")
+            continue
 
-        urls = [
-            f"https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{date_udiff}_F_0000.csv.zip",
-            f"https://archives.nseindia.com/content/historical/EQUITIES/{year}/{month}/cm{day_str}{month}{year}bhav.csv.zip"
+        records = [
+            (r.symbol, r.date, _f(r.open), _f(r.high), _f(r.low), _f(r.close),
+             _i(r.volume), 0, _i(r.delivery))
+            for r in table.itertuples(index=False)
         ]
+        cursor.executemany(
+            "INSERT OR REPLACE INTO ohlcv (symbol, date, open, high, low, close, volume, is_index, delivery) "
+            "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+            records
+        )
+        conn.commit()
 
-        fetched_ok = False
-        last_error = None
-        for url in urls:
-            try:
-                res = session.get(url, timeout=10)
-                if res.status_code == 200:
-                    with zipfile.ZipFile(io.BytesIO(res.content)) as z:
-                        csv_name = z.namelist()[0]
-                        with z.open(csv_name) as f:
-                            df = pd.read_csv(f)
-
-                    df.columns = [c.strip().upper() for c in df.columns]
-
-                    symbol_col = 'TCKRSYMB' if 'TCKRSYMB' in df.columns else ('SYMBOL' if 'SYMBOL' in df.columns else None)
-                    series_col = 'SCTYSRS' if 'SCTYSRS' in df.columns else ('SERIES' if 'SERIES' in df.columns else None)
-
-                    if not symbol_col:
-                        last_error = f"no symbol column found in {url}"
-                        continue
-
-                    # A missing series column must NOT mean "accept every row" - that
-                    # silently lets index/segment-summary rows (e.g. a daily "NSE"
-                    # total line) into the dataset as if they were tradable equities,
-                    # and they then accumulate real-looking OHLCV history over years.
-                    # Treat an undetected series column as a parse failure for this
-                    # day, same as the zero-price sanity check below, instead of
-                    # proceeding unfiltered.
-                    if not series_col:
-                        last_error = (f"no series column (SCTYSRS/SERIES) found in {url} - "
-                                      f"refusing to insert unfiltered rows, columns were: "
-                                      f"{list(df.columns)[:15]}")
-                        continue
-
-                    df = df[df[series_col].isin(['EQ', 'BE'])]
-
-                    # NSE fully switched to the UDiFF bhavcopy format on 2024-07-08
-                    # (Circular 62424), which uses OpnPric/HghPric/LwPric/ClsPric/
-                    # TtlTradgVol - NOT OpnPrc/ClsPrc/TtlTrdQty. The old pre-UDiFF
-                    # archive format (used for the historical URL pattern) used
-                    # OPEN/HIGH/LOW/CLOSE/TOTTRDQTY. Check UDiFF names first, then
-                    # the old names, so both eras of file map correctly instead of
-                    # silently defaulting every price to 0.0.
-                    df['symbol'] = df[symbol_col]
-                    df['open'] = df['OPNPRIC'] if 'OPNPRIC' in df.columns else df.get('OPEN', pd.NA)
-                    df['high'] = df['HGHPRIC'] if 'HGHPRIC' in df.columns else df.get('HIGH', pd.NA)
-                    df['low'] = df['LWPRIC'] if 'LWPRIC' in df.columns else df.get('LOW', pd.NA)
-                    df['close'] = df['CLSPRIC'] if 'CLSPRIC' in df.columns else df.get('CLOSE', pd.NA)
-                    df['volume'] = df['TTLTRADGVOL'] if 'TTLTRADGVOL' in df.columns else df.get('TOTTRDQTY', pd.NA)
-                    df['date'] = date_str
-                    df['is_index'] = 0
-
-                    # Sanity check: if every row's close price is null/zero, we failed
-                    # to find the right columns for this file's format - store nothing
-                    # rather than silently writing a day of zeroed-out prices, and
-                    # surface it as a failure so it's visible in the log.
-                    close_numeric = pd.to_numeric(df['close'], errors='coerce').fillna(0)
-                    if len(df) > 0 and (close_numeric > 0).sum() == 0:
-                        last_error = (f"parsed {len(df)} rows from {url} but every close price "
-                                      f"is 0/null - unrecognized column format, columns were: "
-                                      f"{list(df.columns)[:15]}")
-                        continue
-
-                    records = df[['symbol', 'date', 'open', 'high', 'low', 'close', 'volume', 'is_index']].to_dict('records')
-
-                    cursor.executemany('''
-                        INSERT OR REPLACE INTO ohlcv (symbol, date, open, high, low, close, volume, is_index)
-                        VALUES (:symbol, :date, :open, :high, :low, :close, :volume, :is_index)
-                    ''', records)
-
-                    conn.commit()
-                    total_added += len(records)
-                    print(f"[STORED] Downloaded {date_str} -> nse_{year_str}.db ({len(records)} records)")
-                    fetched_ok = True
-                    break
-                else:
-                    last_error = f"HTTP {res.status_code} from {url}"
-            except Exception as e:
-                last_error = f"{type(e).__name__}: {e} ({url})"
-                continue
-
-        if not fetched_ok:
-            print(f"[FETCH FAILED] {date_str}: both URL patterns failed. Last error: {last_error}")
+        adjusted = apply_recorded_adjustments(conn, date_str)
+        total_added += len(records)
+        stats[source] += 1
+        n_deliv = int(table["delivery"].notna().sum())
+        tag = "WEEKEND SESSION" if is_weekend else "STORED"
+        if is_weekend:
+            weekend_sessions.append(date_str)
+        extra = f", {adjusted} price adjustments applied" if adjusted else ""
+        print(f"[{tag}] {date_str} -> nse_{year_str}.db ({len(records)} records, source={source}, "
+              f"delivery for {n_deliv}{extra})")
 
     close_all_databases()
-    print(f"[PHASE 1 COMPLETE] All raw data saved to database files. Added {total_added} new records.")
+    print(f"[PHASE 1 COMPLETE] Added {total_added} new records. "
+          f"Files used: full={stats['full']}, udiff={stats['udiff']}, old={stats['old']}; "
+          f"weekday failures={stats['failed_weekday']}; "
+          f"weekend/special sessions found={len(weekend_sessions)} {weekend_sessions[:30]}")
+    if DELIVERY_BACKFILL:
+        print(f"[DELIVERY BACKFILL] days filled={stats['delivery_filled']}, "
+              f"days with no full file on NSE={stats['delivery_unavailable']}")
+
+
+def probe_sources():
+    """Reports which NSE file types exist for sample dates (no database is touched)."""
+    session = requests.Session()
+    session.headers.update(HEADERS)
+    try:
+        session.get("https://www.nseindia.com", timeout=10)
+    except Exception as e:
+        print(f"[WARNING] Session setup issue: {e}")
+    samples = ["2026-09-15", "2025-03-18", "2024-06-18", "2023-03-15", "2022-03-15", "2021-03-16",
+               "2020-03-17", "2019-03-19", "2018-03-20", "2016-03-15", "2013-03-19", "2010-03-16",
+               "2006-03-14", "2003-03-18", "2000-03-14"]
+    print("[PROBE] date | full(delivery) | udiff | old | MTO(delivery, informational)")
+    for d in samples:
+        dt = datetime.strptime(d, "%Y-%m-%d")
+        ctx = {"ddmmyyyy": dt.strftime("%d%m%Y"), "yyyymmdd": dt.strftime("%Y%m%d"),
+               "year": dt.strftime("%Y"), "mon": dt.strftime("%b").upper(), "dd": dt.strftime("%d")}
+        cells = []
+        header = ""
+        for label, tpl in (("full", URL_FULL), ("udiff", URL_UDIFF), ("old", URL_OLD), ("mto", URL_MTO)):
+            try:
+                res = _http_get(session, tpl.format(**ctx))
+                cells.append(f"{label}={res.status_code}")
+                if label == "full" and res.status_code == 200:
+                    header = res.text.splitlines()[0][:200] if res.text else ""
+            except Exception as e:
+                cells.append(f"{label}=ERR({type(e).__name__})")
+        print(f"[PROBE] {d} | " + " | ".join(cells))
+        if header:
+            print(f"[PROBE]    full-file header: {header}")
 
 
 # ==========================================
@@ -857,6 +1056,10 @@ def apply_manual_overrides():
 
 
 def main():
+    if PROBE:
+        probe_sources()
+        return
+
     # Normal range fetch (recent/incremental data, per START_DATE/END_DATE).
     fetch_nse_bhavcopy_range(start_date=START_DATE)
 
