@@ -25,6 +25,10 @@ on:
         description: 'Only test which NSE file types exist for sample dates 2000-today (changes nothing)'
         type: boolean
         default: false
+      scan_all_weekends:
+        description: 'Also try EVERY Saturday/Sunday in the date range (one-off discovery run; normally leave unticked and use data/special_sessions.txt)'
+        type: boolean
+        default: false
 
 jobs:
   build:
@@ -104,6 +108,7 @@ jobs:
         RUN_CA_BACKFILL: ${{ github.event.inputs.run_ca_backfill || 'false' }}
         DELIVERY_BACKFILL: ${{ github.event.inputs.delivery_backfill || 'false' }}
         PROBE: ${{ github.event.inputs.probe || 'false' }}
+        WEEKEND_MODE: ${{ github.event.inputs.scan_all_weekends == 'true' && 'all' || '' }}
 
     - name: Commit and Push Updated Databases
       run: |

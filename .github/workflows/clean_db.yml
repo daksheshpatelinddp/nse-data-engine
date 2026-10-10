@@ -1,0 +1,42 @@
+name: Clean Database (remove copied days)
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: 'Tick to REALLY delete the copied days. Leave unticked first: it only prints a report.'
+        type: boolean
+        default: false
+
+jobs:
+  clean:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install pandas numpy
+
+    - name: Find (and optionally remove) copied days
+      run: python backend/clean_db.py
+      env:
+        APPLY: ${{ github.event.inputs.apply || 'false' }}
+
+    - name: Commit and Push Cleaned Databases
+      if: ${{ github.event.inputs.apply == 'true' }}
+      run: |
+        git config --global user.name "GitHub Actions Bot"
+        git config --global user.email "actions@github.com"
+        git add data/databases/*.db
+        git commit -m "Cleanup: removed copied days from databases" || exit 0
+        git pull --rebase origin main
+        git push origin main
