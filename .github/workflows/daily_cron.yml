@@ -109,6 +109,7 @@ jobs:
         DELIVERY_BACKFILL: ${{ github.event.inputs.delivery_backfill || 'false' }}
         PROBE: ${{ github.event.inputs.probe || 'false' }}
         WEEKEND_MODE: ${{ github.event.inputs.scan_all_weekends == 'true' && 'all' || '' }}
+        MAX_RUNTIME_MINUTES: '270'   # stop downloading after 4.5 h so the results can still be saved (GitHub's limit is 6 h)
 
     - name: Commit and Push Updated Databases
       run: |
