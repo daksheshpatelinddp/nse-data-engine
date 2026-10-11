@@ -65,6 +65,16 @@ try:
 except ValueError:
     REQUEST_DELAY = 0.2
 
+# MAX_RUNTIME_MINUTES: time budget for the download loop (0 = unlimited). GitHub stops any job after
+#   6 hours and then saves NOTHING, so a long backfill should stop itself earlier: it finishes the
+#   day it is on, keeps everything downloaded so far, does the corporate-action adjustment, and
+#   prints where to continue. Run the same workflow again to carry on (stored days are skipped).
+SCRIPT_START = time.time()
+try:
+    MAX_RUNTIME_MINUTES = float(os.getenv("MAX_RUNTIME_MINUTES", "0") or 0)
+except ValueError:
+    MAX_RUNTIME_MINUTES = 0.0
+
 # Weekend handling. Saturdays and Sundays are NOT downloaded, except:
 #   1. dates listed in data/special_sessions.txt (Muhurat trading, Budget-day sessions, special
 #      live sessions) - one date per line, YYYY-MM-DD, text after # is ignored;
@@ -475,7 +485,11 @@ def fetch_nse_bhavcopy_range(start_date=START_DATE, date_list=None):
     stats = {"full": 0, "udiff": 0, "old": 0, "failed_weekday": 0,
              "delivery_filled": 0, "delivery_unavailable": 0, "weekends_skipped": 0}
 
+    stopped_before = None
     for date_str in date_list:
+        if MAX_RUNTIME_MINUTES and (time.time() - SCRIPT_START) > MAX_RUNTIME_MINUTES * 60:
+            stopped_before = date_str
+            break
         year_str = date_str[:4]
         conn = get_db_connection(year_str)
         cursor = conn.cursor()
@@ -541,6 +555,10 @@ def fetch_nse_bhavcopy_range(start_date=START_DATE, date_list=None):
               f"delivery for {n_deliv}{extra})")
 
     close_all_databases()
+    if stopped_before:
+        print(f"[TIME LIMIT] Stopped after {MAX_RUNTIME_MINUTES:g} minutes, before {stopped_before}. "
+              f"Everything before that date is saved. To continue, run this workflow again "
+              f"(same dates, or start date {stopped_before}); days already stored are skipped.")
     print(f"[PHASE 1 COMPLETE] Added {total_added} new records. "
           f"Files used: full={stats['full']}, udiff={stats['udiff']}, old={stats['old']}; "
           f"weekday failures={stats['failed_weekday']}; weekend days skipped={stats['weekends_skipped']} "
