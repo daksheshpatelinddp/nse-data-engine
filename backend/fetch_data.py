@@ -5,6 +5,7 @@ import glob
 import json
 import zipfile
 import sqlite3
+import sys
 import time
 import pandas as pd
 import requests
@@ -74,6 +75,12 @@ try:
     MAX_RUNTIME_MINUTES = float(os.getenv("MAX_RUNTIME_MINUTES", "0") or 0)
 except ValueError:
     MAX_RUNTIME_MINUTES = 0.0
+
+# Symbol renames (data/symbol_changes.csv, NSE's symbolchange.csv): every row and every corporate action is
+# stored under the company's LATEST name, so a renamed stock keeps one continuous history.
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+from symbol_map import SymbolMapper, migrate_ca_records
+SYMBOL_MAP = SymbolMapper()
 
 # Weekend handling. Saturdays and Sundays are NOT downloaded, except:
 #   1. dates listed in data/special_sessions.txt (Muhurat trading, Budget-day sessions, special
@@ -350,6 +357,9 @@ def parse_bhavcopy(df, date_str, url):
     out = out[out["series"].isin(["EQ", "BE"])].copy()
     out["date"] = date_str
     out["is_index"] = 0
+    if SYMBOL_MAP:
+        out["symbol"] = [SYMBOL_MAP.canonical(sym, date_str) for sym in out["symbol"]]
+        out = out.drop_duplicates("symbol", keep="last")      # old and new name on the same day: keep one row
 
     # Sanity check: a day where every close is 0/null means we did not recognise the columns.
     if len(out) > 0 and (out["close"].fillna(0) > 0).sum() == 0:
@@ -879,6 +889,7 @@ def apply_factor_across_all_dbs(symbol, ex_date, factor, purpose, action_type):
     check: if it inserts 0 rows, this exact adjustment was already applied to this db
     file in a previous run, and the price UPDATE below must be skipped entirely.
     """
+    symbol = SYMBOL_MAP.canonical(symbol, ex_date)
     db_files = [f for f in os.listdir(DB_DIR) if f.startswith("nse_") and f.endswith(".db")]
     
     for db_file in db_files:
@@ -988,6 +999,8 @@ def _process_ca_row(row_dict, source_label, row_label):
     if not purpose:
         print(f"[SKIP] {source_label} {row_label}: no purpose/subject text for {symbol} @ {ex_date}")
         return "skipped"
+
+    symbol = SYMBOL_MAP.canonical(symbol, ex_date)     # the stock's latest name = the name its rows are stored under
 
     events = parse_purpose_multipliers(purpose, row_dict, symbol, ex_date)
 
@@ -1137,10 +1150,25 @@ def apply_manual_overrides():
         print(f"[ERROR] Applying manual overrides failed: {e}")
 
 
+def canonicalize_corporate_action_records():
+    """Start-of-run safety step: corporate-action records must carry the same (latest) names as the rows."""
+    if not SYMBOL_MAP:
+        return
+    total = 0
+    for f in sorted(os.listdir(DB_DIR)) if os.path.isdir(DB_DIR) else []:
+        if f.startswith("nse_") and f.endswith(".db") and f[4:8].isdigit():
+            conn = get_db_connection(f[4:8])
+            total += migrate_ca_records(conn, SYMBOL_MAP, apply=True)
+    if total:
+        print(f"[SYMBOLS] {total} corporate-action records moved to their stock's latest name")
+
+
 def main():
     if PROBE:
         probe_sources()
         return
+
+    canonicalize_corporate_action_records()
 
     # Normal range fetch (recent/incremental data, per START_DATE/END_DATE).
     fetch_nse_bhavcopy_range(start_date=START_DATE)

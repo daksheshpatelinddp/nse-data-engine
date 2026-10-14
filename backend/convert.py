@@ -187,6 +187,144 @@ def history_fingerprint(files):
     return h.hexdigest()
 
 
+
+# =====================================================================================
+# PACKS (format 3): the same history in a compact form for fast loading and bulk work.
+#
+# Every stock's history is ONE zlib-compressed block (dates and prices delta-coded as 32-bit integers,
+# prices in paise). Blocks of ~64 stocks are concatenated into one file per bucket and the byte position
+# of every block is listed in manifest.json, so the app fetches a stock with a single range request:
+# no file header to read first. A block is ~5x smaller than the same stock in parquet. A second, daily
+# file ("recent") holds the last 400 bars of every active stock: scans read just that one file.
+#
+#   <db>/p/<fingerprint>/b000.pack ...   history packs     (rebuilt together with the history)
+#   <db>/r/<token>.pack + recent.json    last 400 bars     (rebuilt on every conversion run)
+# =====================================================================================
+import zlib
+import struct
+import numpy as np
+
+PACK_VERSION = 1
+RECENT_BARS = int(os.getenv("RECENT_BARS", "400") or 400)
+
+
+def encode_pack_block(dates, o, h, l, c, v, dq):
+    """One stock -> compressed bytes. Layout before compression (little endian):
+       'AB', version, mode, n(u32), scale(i32) | dates: i32 deltas | close: i32 deltas |
+       open-close, high-close, low-close: i32 | padding to 8 bytes | volume f64 | delivery f64.
+       mode 1 = prices as integers (price*scale, exact); mode 2 = prices as float64 (never expected)."""
+    n = len(dates)
+    days = np.array(dates, dtype="datetime64[D]").astype("int64")
+    arrs = [np.asarray(a, dtype="float64") for a in (o, h, l, c)]
+    scale = 0
+    for sc in (100, 10000):
+        cents = [np.rint(a * sc) for a in arrs]
+        if all(np.all(np.abs(a * sc - x) < 1e-5) and np.all(np.abs(x) < 2 ** 30) for a, x in zip(arrs, cents)):
+            scale = sc
+            break
+
+    def delta(a):
+        d = np.empty(len(a), dtype="int64")
+        d[0] = a[0]
+        d[1:] = np.diff(a)
+        return d
+
+    parts = [struct.pack("<2sBBIi", b"AB", PACK_VERSION, 1 if scale else 2, n, scale),
+             delta(days).astype("<i4").tobytes()]
+    if scale:
+        oc, hc, lc, cc = cents
+        parts.append(delta(cc).astype("<i4").tobytes())
+        for x in (oc, hc, lc):
+            parts.append((x - cc).astype("<i4").tobytes())
+    else:
+        for a in (arrs[3], arrs[0], arrs[1], arrs[2]):
+            parts.append(a.astype("<f8").tobytes())
+    parts.append(b"\0" * ((-sum(len(x) for x in parts)) % 8))
+    parts.append(np.asarray(v, dtype="<f8").tobytes())
+    parts.append(np.asarray(dq, dtype="<f8").tobytes())
+    return zlib.compress(b"".join(parts), 9)
+
+
+def pack_group(g):
+    return encode_pack_block(g["date"].tolist(), g["open"].values, g["high"].values, g["low"].values,
+                             g["close"].values, g["volume"].values.astype("float64"),
+                             g["delivery"].values.astype("float64"))
+
+
+def _symbol_aliases(known_symbols):
+    """old name -> latest name, for old names that no longer exist as a symbol (the app uses it for typed names)."""
+    try:
+        sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+        import symbol_map as sm
+        changes = sm.load_symbol_changes()
+    except Exception:
+        return {}
+    known = set(known_symbols)
+    out = {}
+    for old in changes:
+        final = sm.canonical_symbol(old, "0000-00-00", changes)
+        if old not in known and final in known and final != old:
+            out[old] = final
+    return out
+
+
+def build_recent(db_id, files):
+    """Last RECENT_BARS bars of every active stock in ONE file (scanners, explorations, charts' newest part)."""
+    cur_year = files[-1][0]
+    newest = files[-3:]                                   # two to three years are plenty for 400 bars
+    deny = ",".join("?" * len(NON_TICKER_SYMBOLS))
+    frames, active = [], set()
+    for year, path in newest:
+        c = sqlite3.connect(path)
+        try:
+            frames.append(pd.read_sql_query(
+                f"SELECT symbol, date, open, high, low, close, volume, {_delivery_expr(c)} FROM ohlcv "
+                f"WHERE {_ROW_FILTER} AND UPPER(TRIM(symbol)) NOT IN ({deny})", c, params=NON_TICKER_SYMBOLS))
+            if year == cur_year:
+                active = set(frames[-1]["symbol"])
+        finally:
+            c.close()
+    df = pd.concat(frames, ignore_index=True)
+    df = df[df["symbol"].isin(active)]
+    df["volume"] = pd.to_numeric(df["volume"], errors="coerce").fillna(0).astype("int64")
+    df["delivery"] = pd.to_numeric(df["delivery"], errors="coerce").astype("float64")
+    df = df.sort_values(["symbol", "date"]).groupby("symbol", sort=True).tail(RECENT_BARS)
+
+    idx, parts, off = {}, [], 0
+    for sym, g in df.groupby("symbol", sort=True):
+        blob = pack_group(g)
+        idx[sym] = [off, len(blob), len(g)]
+        parts.append(blob)
+        off += len(blob)
+    pack = b"".join(parts)
+    token = hashlib.sha1(pack).hexdigest()[:12]
+
+    old = None
+    try:
+        old = json.loads(s3_client.get_object(Bucket=BUCKET_NAME, Key=f"{db_id}/recent.json")["Body"].read())
+    except Exception:
+        pass
+    if old and old.get("token") == token and not FORCE_ALL:
+        print(f"[RECENT] {db_id}: unchanged ({len(idx)} stocks, token {token}).")
+        return None
+    s3_client.put_object(Bucket=BUCKET_NAME, Key=f"{db_id}/r/{token}.pack", Body=pack, ContentType="application/octet-stream")
+    meta = {"format": 1, "db": db_id, "token": token, "file": f"r/{token}.pack", "size": len(pack),
+            "bars": RECENT_BARS, "currentYear": cur_year, "stocks": len(idx),
+            "built": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"), "idx": idx}
+    s3_client.put_object(Bucket=BUCKET_NAME, Key=f"{db_id}/recent.json",
+                         Body=json.dumps(meta, separators=(",", ":")).encode(),
+                         ContentType="application/json", CacheControl="no-cache")
+    try:                                                   # remove older recent packs
+        page = s3_client.list_objects_v2(Bucket=BUCKET_NAME, Prefix=f"{db_id}/r/")
+        stale = [o["Key"] for o in page.get("Contents", []) if o["Key"] != f"{db_id}/r/{token}.pack"]
+        if stale:
+            s3_client.delete_objects(Bucket=BUCKET_NAME, Delete={"Objects": [{"Key": k} for k in stale]})
+    except Exception as e:
+        print(f"[RECENT]   (could not remove old recent packs: {e})")
+    print(f"[RECENT] {db_id}: {len(idx)} stocks x last {RECENT_BARS} bars, {len(pack) / 1048576:.1f} MB (token {token})")
+    return (f"{db_id}/recent", int(sum(v[2] for v in idx.values())), round(len(pack) / 1048576, 1), len(idx))
+
+
 def read_manifest(db_id):
     try:
         obj = s3_client.get_object(Bucket=BUCKET_NAME, Key=f"{db_id}/manifest.json")
@@ -229,6 +367,7 @@ def build_history(db_id, files):
         buckets = [symbols[i:i + HIST_BUCKET_SIZE] for i in range(0, len(symbols), HIST_BUCKET_SIZE)]
         fp10 = fp[:10]
         manifest_buckets, total_rows, total_bytes, total_groups = {}, 0, 0, 0
+        pack_buckets, pack_total = {}, 0
 
         for n, names in enumerate(buckets):
             bname = f"b{n:03d}"
@@ -242,11 +381,21 @@ def build_history(db_id, files):
             df = df.sort_values(["symbol", "date"]).reset_index(drop=True)
 
             local = os.path.join(tmp, f"{bname}.parquet")
+            pack_idx, pack_parts, pack_off = {}, [], 0
             with pq.ParquetWriter(local, HIST_SCHEMA, compression="snappy") as writer:
                 for sym, g in df.groupby("symbol", sort=True):
                     # one stock = exactly one row group, so the app reads just that block
                     writer.write_table(pa.Table.from_pandas(g, schema=HIST_SCHEMA, preserve_index=False),
                                        row_group_size=len(g))
+                    blob = pack_group(g)                          # the same stock in the compact pack format
+                    pack_idx[sym] = [pack_off, len(blob), len(g)]
+                    pack_parts.append(blob)
+                    pack_off += len(blob)
+            pack_bytes = b"".join(pack_parts)
+            s3_client.put_object(Bucket=BUCKET_NAME, Key=f"{db_id}/p/{fp10}/{bname}.pack", Body=pack_bytes,
+                                 ContentType="application/octet-stream")
+            pack_buckets[bname] = {"size": len(pack_bytes), "idx": pack_idx}
+            pack_total += len(pack_bytes)
             size = os.path.getsize(local)
             groups = pq.ParquetFile(local).num_row_groups
             if groups != df["symbol"].nunique():
@@ -267,6 +416,8 @@ def build_history(db_id, files):
             "fingerprint": fp, "histPath": f"h/{fp10}", "bucketSize": HIST_BUCKET_SIZE,
             "built": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
             "rows": total_rows, "buckets": manifest_buckets,
+            "packs": {"version": PACK_VERSION, "path": f"p/{fp10}", "buckets": pack_buckets},
+            "aliases": _symbol_aliases(symbols),
         }
         # The manifest goes up LAST: until then the app keeps using the previous, complete history.
         s3_client.put_object(Bucket=BUCKET_NAME, Key=f"{db_id}/manifest.json",
@@ -275,16 +426,19 @@ def build_history(db_id, files):
 
         # Remove the previous history (any other fingerprint folder). Not fatal if it fails.
         try:
-            stale, token = [], None
-            while True:
-                kw = {"Bucket": BUCKET_NAME, "Prefix": f"{db_id}/h/"}
-                if token:
-                    kw["ContinuationToken"] = token
-                page = s3_client.list_objects_v2(**kw)
-                stale += [o["Key"] for o in page.get("Contents", []) if not o["Key"].startswith(f"{db_id}/h/{fp10}/")]
-                if not page.get("IsTruncated"):
-                    break
-                token = page.get("NextContinuationToken")
+            stale = []
+            for folder in ("h", "p"):
+                token = None
+                while True:
+                    kw = {"Bucket": BUCKET_NAME, "Prefix": f"{db_id}/{folder}/"}
+                    if token:
+                        kw["ContinuationToken"] = token
+                    page = s3_client.list_objects_v2(**kw)
+                    stale += [o["Key"] for o in page.get("Contents", [])
+                              if not o["Key"].startswith(f"{db_id}/{folder}/{fp10}/")]
+                    if not page.get("IsTruncated"):
+                        break
+                    token = page.get("NextContinuationToken")
             for i in range(0, len(stale), 500):
                 s3_client.delete_objects(Bucket=BUCKET_NAME,
                                          Delete={"Objects": [{"Key": k} for k in stale[i:i + 500]]})
@@ -294,7 +448,7 @@ def build_history(db_id, files):
             print(f"[HISTORY]   (could not remove old history files: {e})")
 
         print(f"[HISTORY] {db_id}: done - {len(symbols)} stocks in {len(buckets)} bucket files, "
-              f"{total_rows} rows, {total_bytes / 1048576:.1f} MB")
+              f"{total_rows} rows, {total_bytes / 1048576:.1f} MB parquet + {pack_total / 1048576:.1f} MB packs")
         return (f"{db_id}/history", total_rows, round(total_bytes / 1048576, 1), total_groups)
     finally:
         for _, c in conns:
@@ -316,6 +470,13 @@ def build_all_histories(db_list):
         except Exception as e:
             print(f"[HISTORY] ERROR building history for {db_id}: {e}")
             FAILED.append(f"{db_id}/history")
+        try:
+            res = build_recent(db_id, sorted(files))
+            if res:
+                DONE.append(res)
+        except Exception as e:
+            print(f"[RECENT] ERROR building the recent pack for {db_id}: {e}")
+            FAILED.append(f"{db_id}/recent")
 
 
 
