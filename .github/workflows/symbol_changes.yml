@@ -1,0 +1,50 @@
+name: Join Renamed Stocks (symbol changes)
+
+on:
+  workflow_dispatch:
+    inputs:
+      apply:
+        description: 'Tick to REALLY join the histories. Leave unticked first: it only prints a report.'
+        type: boolean
+        default: false
+      download_latest:
+        description: 'First download the newest symbol change list from NSE (otherwise data/symbol_changes.csv is used as it is)'
+        type: boolean
+        default: false
+
+jobs:
+  symbols:
+    runs-on: ubuntu-latest
+
+    steps:
+    - name: Checkout Repository
+      uses: actions/checkout@v4
+
+    - name: Set up Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+
+    - name: Install Dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install requests
+
+    - name: Download the newest NSE list
+      if: ${{ github.event.inputs.download_latest == 'true' }}
+      run: python backend/update_symbol_changes.py
+
+    - name: Preview or join renamed stocks
+      run: python backend/apply_symbol_changes.py
+      env:
+        APPLY: ${{ github.event.inputs.apply || 'false' }}
+
+    - name: Commit and Push
+      if: ${{ github.event.inputs.apply == 'true' || github.event.inputs.download_latest == 'true' }}
+      run: |
+        git config --global user.name "GitHub Actions Bot"
+        git config --global user.email "actions@github.com"
+        git add data/databases/*.db data/symbol_changes.csv || true
+        git commit -m "Symbol changes: joined renamed stocks / updated NSE list" || exit 0
+        git pull --rebase origin main
+        git push origin main
