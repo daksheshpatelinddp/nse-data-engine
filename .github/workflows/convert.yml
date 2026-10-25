@@ -30,6 +30,18 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas pyarrow boto3
 
+      - name: Dividend list and report (cash dividends are applied to the prices while converting)
+        continue-on-error: true
+        run: python backend/dividends.py --report
+
+      - name: Save dividend report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: dividend-report
+          path: data/corporate_actions/dividend-report.txt
+          if-no-files-found: ignore
+
       - name: Run Conversion Script
         env:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}

@@ -25,6 +25,18 @@ on:
         description: 'Only test which NSE file types exist for sample dates 2000-today (changes nothing)'
         type: boolean
         default: false
+      index_only:
+        description: 'Only fetch the NSE index files (Nifty 50, Nifty 500 ... all indices) for days that have stock data; stocks are not touched'
+        type: boolean
+        default: false
+      index_recheck:
+        description: 'Ask NSE again for index days it had no file for earlier (normally leave unchecked)'
+        type: boolean
+        default: false
+      index_api_backfill:
+        description: 'Also try niftyindices.com for index history before the daily files exist (experimental, may be blocked)'
+        type: boolean
+        default: false
       scan_all_weekends:
         description: 'Also try EVERY Saturday/Sunday in the date range (one-off discovery run; normally leave unticked and use data/special_sessions.txt)'
         type: boolean
@@ -119,6 +131,9 @@ jobs:
         RUN_CA_BACKFILL: ${{ github.event.inputs.run_ca_backfill || 'false' }}
         DELIVERY_BACKFILL: ${{ github.event.inputs.delivery_backfill || 'false' }}
         PROBE: ${{ github.event.inputs.probe || 'false' }}
+        INDEX_ONLY: ${{ github.event.inputs.index_only || 'false' }}
+        INDEX_RECHECK: ${{ github.event.inputs.index_recheck || 'false' }}
+        INDEX_API_BACKFILL: ${{ github.event.inputs.index_api_backfill || 'false' }}
         WEEKEND_MODE: ${{ github.event.inputs.scan_all_weekends == 'true' && 'all' || '' }}
         MAX_RUNTIME_MINUTES: '270'   # stop downloading after 4.5 h so the results can still be saved (GitHub's limit is 6 h)
 
@@ -132,6 +147,9 @@ jobs:
 
         git add data/databases/nse_*.db
         git add data/symbol_changes.csv || true
+        git add data/corporate_actions/dividends.csv || true
+        git add data/index_names.json || true
+        git add -A data/index_files || true
         git commit -m "Automated update: Yearly NSE Databases" || exit 0
         git pull --rebase origin main
         git push origin main
