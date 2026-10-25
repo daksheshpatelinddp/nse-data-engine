@@ -10,6 +10,17 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import boto3
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import dividends          # cash-dividend adjustment (computed here from data/corporate_actions/dividends.csv, never written into the .db files)
+import indices            # NSE index data (names like ^NIFTY50) travels in the same files as the stocks
+
+ADJ = None                # set in __main__: the dividend adjuster (does nothing when there are no dividends or DIVIDEND_ADJUST=false)
+
+
+def _adj(df):
+    """Dividend-adjusted copy of a frame (symbol, date, open, high, low, close ...). Indices are never touched."""
+    return ADJ.adjust(df) if ADJ else df
+
 # Read credentials from GitHub Secrets
 R2_ACCESS_KEY_ID = os.getenv("R2_ACCESS_KEY_ID")
 R2_SECRET_ACCESS_KEY = os.getenv("R2_SECRET_ACCESS_KEY")
@@ -82,8 +93,7 @@ def convert_and_upload(db_files):
                 """
                 SELECT symbol, date, open, high, low, close, volume, {delivery_col}
                 FROM ohlcv
-                WHERE is_index = 0
-                  AND symbol IS NOT NULL AND TRIM(symbol) <> ''
+                WHERE symbol IS NOT NULL AND TRIM(symbol) <> ''
                   AND UPPER(TRIM(symbol)) NOT IN ({placeholders})
                   AND close IS NOT NULL AND close > 0
                   AND open IS NOT NULL AND open > 0
@@ -97,6 +107,7 @@ def convert_and_upload(db_files):
             if df.empty:
                 print(f"Skipping {db_file}: 'ohlcv' table is empty.")
                 continue
+            df = _adj(df)
 
             # Delivery quantity is NULL for days NSE has no delivery file for. Store it as a
             # plain number column (NaN = missing) so the file always has the same layout.
@@ -129,7 +140,8 @@ def convert_and_upload(db_files):
                 # instead of scanning the parquet file (1 request instead of dozens)
                 names = sorted(set(df["symbol"].astype(str)))
                 s3_client.put_object(Bucket=BUCKET_NAME, Key=f"{db_id}/symbols.json",
-                                     Body=json.dumps({"year": int(year_str), "symbols": names}, separators=(",", ":")).encode(),
+                                     Body=json.dumps({"year": int(year_str), "symbols": names,
+                                                      "indices": [n for n in names if n.startswith("^")]}, separators=(",", ":")).encode(),
                                      ContentType="application/json", CacheControl="no-cache")
                 print(f"Uploaded {db_id}/symbols.json ({len(names)} symbols)")
 
@@ -166,7 +178,7 @@ HIST_SCHEMA = pa.schema([
     ("volume", pa.int64()), ("delivery", pa.float64()),
 ])
 NON_TICKER_SYMBOLS = ('NSE', 'BSE', 'NIFTY', 'NIFTY 50', 'SENSEX')   # same denylist as the yearly files
-_ROW_FILTER = ("is_index = 0 AND symbol IS NOT NULL AND TRIM(symbol) <> '' "
+_ROW_FILTER = ("symbol IS NOT NULL AND TRIM(symbol) <> '' "
                "AND close IS NOT NULL AND close > 0 AND open IS NOT NULL AND open > 0")
 
 
@@ -184,6 +196,8 @@ def history_fingerprint(files):
     for year, path in files:
         h.update(f"{year}:{_file_sha1(path)};".encode())
     h.update(f"bucket{HIST_BUCKET_SIZE};layout{HIST_LAYOUT_VERSION}".encode())
+    if ADJ and ADJ.signature:
+        h.update(f"dividends:{ADJ.signature}".encode())      # a new dividend changes every older price of that stock: rebuild the history
     return h.hexdigest()
 
 
@@ -286,6 +300,7 @@ def build_recent(db_id, files):
             c.close()
     df = pd.concat(frames, ignore_index=True)
     df = df[df["symbol"].isin(active)]
+    df = _adj(df)
     df["volume"] = pd.to_numeric(df["volume"], errors="coerce").fillna(0).astype("int64")
     df["delivery"] = pd.to_numeric(df["delivery"], errors="coerce").astype("float64")
     df = df.sort_values(["symbol", "date"]).groupby("symbol", sort=True).tail(RECENT_BARS)
@@ -376,6 +391,7 @@ def build_history(db_id, files):
                 f"SELECT symbol, date, open, high, low, close, volume, {_delivery_expr(c)} FROM ohlcv "
                 f"WHERE {_ROW_FILTER} AND symbol IN ({marks})", c, params=names) for _, c in conns]
             df = pd.concat(frames, ignore_index=True)
+            df = _adj(df)
             df["volume"] = pd.to_numeric(df["volume"], errors="coerce").fillna(0).astype("int64")
             df["delivery"] = pd.to_numeric(df["delivery"], errors="coerce").astype("float64")
             df = df.sort_values(["symbol", "date"]).reset_index(drop=True)
@@ -417,7 +433,9 @@ def build_history(db_id, files):
             "built": datetime.datetime.now(datetime.timezone.utc).isoformat(timespec="seconds"),
             "rows": total_rows, "buckets": manifest_buckets,
             "packs": {"version": PACK_VERSION, "path": f"p/{fp10}", "buckets": pack_buckets},
-            "aliases": _symbol_aliases(symbols),
+            "aliases": {**_symbol_aliases(symbols),
+                        **indices.alias_map([n for n in symbols if n.startswith("^")], [n for n in symbols if not n.startswith("^")])},
+            "indices": [n for n in symbols if n.startswith("^")],
         }
         # The manifest goes up LAST: until then the app keeps using the previous, complete history.
         s3_client.put_object(Bucket=BUCKET_NAME, Key=f"{db_id}/manifest.json",
@@ -456,6 +474,19 @@ def build_history(db_id, files):
         shutil.rmtree(tmp, ignore_errors=True)
 
 
+def upload_index_names(db_id="nse"):
+    """indices.json = {"^NIFTY50": "NIFTY 50", ...}: the readable names of the index symbols (written by the fetch step)."""
+    try:
+        with open(indices.INDEX_NAMES_JSON, encoding="utf-8") as f:
+            names = json.load(f)
+    except (OSError, ValueError):
+        return
+    if names:
+        s3_client.put_object(Bucket=BUCKET_NAME, Key=f"{db_id}/indices.json", Body=json.dumps(names, separators=(",", ":")).encode(),
+                             ContentType="application/json", CacheControl="no-cache")
+        print(f"Uploaded {db_id}/indices.json ({len(names)} index names)")
+
+
 def build_all_histories(db_list):
     groups = {}
     for path in db_list:
@@ -490,8 +521,10 @@ if __name__ == "__main__":
         print("No database files matching pattern '<database>_<year>.db' found.")
     else:
         print(f"Discovered databases: {db_list}")
+        ADJ = dividends.build_adjuster(DB_DIR)
         convert_and_upload(db_list)
         build_all_histories(db_list)
+        upload_index_names()
 
     print("\n===== SUMMARY =====")
     for year, rows, mb, groups in DONE:

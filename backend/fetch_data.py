@@ -81,6 +81,20 @@ except ValueError:
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from symbol_map import SymbolMapper, migrate_ca_records
 SYMBOL_MAP = SymbolMapper()
+import indices            # NSE index data (Nifty 50, Nifty 500 ...) -> the same databases, names like ^NIFTY50
+import dividends          # cash dividends -> data/corporate_actions/dividends.csv (applied to prices at conversion time)
+
+# FETCH_INDICES (default on): also download NSE's daily all-indices file for every trading day that has stock data.
+# INDEX_ONLY: do nothing except the index step (for a one-off index backfill). INDEX_RECHECK: ask again for days
+# that NSE had no index file for. INDEX_API_BACKFILL: also try niftyindices.com for the years before NSE's daily files.
+FETCH_INDICES = os.getenv("FETCH_INDICES", "true").strip().lower() not in ("0", "false", "no", "off")
+INDEX_ONLY = os.getenv("INDEX_ONLY", "").strip().lower() in ("1", "true", "yes")
+INDEX_RECHECK = os.getenv("INDEX_RECHECK", "").strip().lower() in ("1", "true", "yes")
+# Daily runs look at EVERY trading day that still has no index data (so a day whose index file NSE published late is picked up the next day);
+# days already stored or known to have no file cost no request. INDEX_START_DATE (YYYY-MM-DD) limits the look-back if you ever want that.
+INDEX_START_DATE = os.getenv("INDEX_START_DATE", "").strip()
+INDEX_API_BACKFILL = os.getenv("INDEX_API_BACKFILL", "").strip().lower() in ("1", "true", "yes")
+LIVE_DIVIDEND_ROWS = []   # dividends seen in this run's live NSE fetch (kept in dividends.csv)
 
 # Weekend handling. Saturdays and Sundays are NOT downloaded, except:
 #   1. dates listed in data/special_sessions.txt (Muhurat trading, Budget-day sessions, special
@@ -608,6 +622,16 @@ def probe_sources():
         print(f"[PROBE] {d} | " + " | ".join(cells))
         if header:
             print(f"[PROBE]    full-file header: {header}")
+        icells = []
+        for k, tpl in enumerate(indices.URLS):
+            try:
+                res = _http_get(session, tpl.format(ddmmyyyy=dt.strftime("%d%m%Y")))
+                icells.append(f"index{k + 1}={res.status_code}")
+                if res.status_code == 200 and k == 0:
+                    print(f"[PROBE]    index file header: {res.text.splitlines()[0][:160] if res.text else ''}")
+            except Exception as e:
+                icells.append(f"index{k + 1}=ERR({type(e).__name__})")
+        print(f"[PROBE] {d} | all-indices file: " + " | ".join(icells))
 
 
 # ==========================================
@@ -1112,6 +1136,14 @@ def fetch_live_corporate_actions(days_lookback=10):
         print(f"[LIVE-CA ERROR] Fetch/parse failed: {e} - skipping this run's live fetch.")
         return
 
+    try:
+        live_div = dividends.rows_from_ca_frame(pd.DataFrame(records), SYMBOL_MAP if SYMBOL_MAP else None)
+        if len(live_div):
+            LIVE_DIVIDEND_ROWS.append(live_div)
+            print(f"[LIVE-CA] {len(live_div)} dividend record(s) in the live list (stored in dividends.csv)")
+    except Exception as e:
+        print(f"[LIVE-CA] could not read dividends from the live list: {e}")
+
     counts = {"applied": 0, "skipped": 0, "filtered": 0, "no_action_needed": 0}
 
     for i, record in enumerate(records):
@@ -1163,15 +1195,66 @@ def canonicalize_corporate_action_records():
         print(f"[SYMBOLS] {total} corporate-action records moved to their stock's latest name")
 
 
+def fetch_index_data():
+    """Index step: files you dropped into data/index_files/, NSE's daily all-indices files, optional niftyindices.com history."""
+    print("[INDICES START] NSE index data (Nifty 50, Nifty 500, sector indices ...)")
+    try:
+        years = sorted({int(f[4:8]) for f in os.listdir(DB_DIR) if f.startswith("nse_") and f.endswith(".db") and f[4:8].isdigit()})
+        start_year = int(START_DATE[:4]) if START_DATE[:4].isdigit() else 2000
+        years = [y for y in years if y >= start_year]
+        got = indices.import_index_files(lambda y: get_db_connection(y))
+        if got:
+            print(f"[INDICES] {got} rows read from your files in {indices.INDEX_FILES_DIR}/")
+        session = requests.Session()
+        session.headers.update(HEADERS)
+        try:
+            session.get("https://www.nseindia.com", timeout=10)
+        except Exception as e:
+            print(f"[WARNING] Session setup issue: {e}")
+        if INDEX_API_BACKFILL:
+            names = indices.DEFAULT_API_NAMES
+            try:
+                names = [l.strip() for l in open("data/index_names.txt", encoding="utf-8") if l.strip() and not l.startswith("#")] or names
+            except OSError:
+                pass
+            n = indices.fetch_api_history(lambda y: get_db_connection(y), session, names, max(2000, start_year), datetime.now().year)
+            print(f"[INDICES] niftyindices.com history: {n} rows stored")
+        deadline = SCRIPT_START + MAX_RUNTIME_MINUTES * 60 if MAX_RUNTIME_MINUTES else None
+        stats = indices.fetch_missing_days(lambda y: get_db_connection(y), years, session, _http_get, delay=0, recheck=INDEX_RECHECK,
+                                           deadline=deadline, date_min=INDEX_START_DATE if len(INDEX_START_DATE) == 10 else None,
+                                           date_max=END_DATE_ENV if len(END_DATE_ENV) == 10 else None)
+        print(f"[INDICES COMPLETE] days stored={stats['stored_days']} ({stats['rows']} rows), days NSE had no index file for={stats['missing']}, "
+              f"days skipped (known missing; INDEX_RECHECK=true asks again)={stats['skipped_known_missing']}")
+    except Exception as e:                    # the index step must never stop the stock data from being saved
+        print(f"[INDICES ERROR] {type(e).__name__}: {e}")
+
+
+def save_dividend_list():
+    try:
+        extra = pd.concat(LIVE_DIVIDEND_ROWS, ignore_index=True) if LIVE_DIVIDEND_ROWS else None
+        df = dividends.rebuild_store(SYMBOL_MAP if SYMBOL_MAP else None, extra=extra)
+        print(f"[DIVIDENDS] {len(df)} cash dividends of {df['symbol'].nunique() if len(df) else 0} stocks in {dividends.DIVIDENDS_CSV} "
+              f"(applied to the prices when the files are converted)")
+    except Exception as e:
+        print(f"[DIVIDENDS ERROR] {type(e).__name__}: {e}")
+
+
 def main():
     if PROBE:
         probe_sources()
+        return
+
+    if INDEX_ONLY:
+        fetch_index_data()
+        close_all_databases()
         return
 
     canonicalize_corporate_action_records()
 
     # Normal range fetch (recent/incremental data, per START_DATE/END_DATE).
     fetch_nse_bhavcopy_range(start_date=START_DATE)
+    if FETCH_INDICES:
+        fetch_index_data()
 
     # Historical corporate-action backfill (dates outside START_DATE, e.g. old demergers)
     # only runs when explicitly requested. This keeps regular incremental runs fast and
@@ -1186,6 +1269,7 @@ def main():
     process_all_corporate_actions()   # one-time/periodic static historical file(s)
     fetch_live_corporate_actions()    # automated - runs every time, picks up new announcements
     apply_manual_overrides()
+    save_dividend_list()
     close_all_databases()
 
 
