@@ -231,7 +231,11 @@ def trading_dates(conn, year):
 
 
 def days_with_indices(conn):
-    return {r[0] for r in conn.execute("SELECT DISTINCT date FROM ohlcv WHERE is_index = 1")}
+    """Days that already hold the full all-indices file (downloaded, or at least 20 different indices).
+    A single index you loaded from a CSV (Nifty 50 history) does not count: NSE's daily file is still fetched for that day."""
+    done = {r[0] for r in conn.execute("SELECT date FROM index_checked WHERE status = 'ok'")}
+    many = {r[0] for r in conn.execute("SELECT date FROM ohlcv WHERE is_index = 1 GROUP BY date HAVING COUNT(*) >= 20")}
+    return done | many
 
 
 def fetch_missing_days(get_conn, years, session, get, delay=0.2, recheck=False, deadline=None, log=print, recent_days=14, date_min=None, date_max=None, give_up_after=None):
