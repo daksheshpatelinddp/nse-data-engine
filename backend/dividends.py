@@ -54,6 +54,7 @@ def enabled():
 _FACE = re.compile(r"(?:face\s*value|f\.?\s*v\.?)\s*(?:of\s*)?(?:rs|re|inr)?\.?\s*[:\-–]*\s*\d+(?:\.\d+)?", re.I)
 _RUPEES = re.compile(r"\b(?:rs|re|inr)(?![a-z])\.?[\s:\-–.]*?(\d+(?:\.\d+)?)", re.I)   # 'Rs 5', 'Re.1/-', 'Rs3.50', 'Rs:- 0.70' but not 'Revised' 
 _PERCENT = re.compile(r"(\d+(?:\.\d+)?)\s*%")
+_DIVWORD = r"\b(?:div\b|divi?d\w*|divd\w*)"          # dividend, div, and NSE's typos (Divdiend, Dividned)
 _NOT_DIVIDEND = re.compile(r"dividend\s+distribution\s+tax|ddt\b", re.I)
 
 
@@ -66,16 +67,16 @@ def parse_dividend(purpose, face_value=None):
     A purpose that holds two dividends ('Interim Dividend - Rs 2 / Special Dividend - Rs 3') gives two amounts."""
     text = re.sub(r"\s+", " ", str(purpose or "")).strip()
     low = text.lower()
-    if not re.search(r"\bdiv(?:idend)?\b|dividend", low):
+    if not re.search(_DIVWORD, low):
         return []
     out = []
     for seg in re.split(r"/(?!\s*-)", text):             # a "/" splits two events, but not the "/-" of "Rs 5/-"
         s = seg.strip()
-        if not re.search(r"\bdiv(?:idend)?\b|dividend", s, re.I) or _NOT_DIVIDEND.search(s):
+        if not re.search(_DIVWORD, s, re.I) or _NOT_DIVIDEND.search(s):
             continue
         s = _FACE.sub(" ", s)
         found = [float(x) for x in _RUPEES.findall(s)]
-        words = len(re.findall(r"dividend|\bdiv\b", s, re.I))
+        words = len(re.findall(_DIVWORD, s, re.I))
         if found:
             # 'Dividend Rs 525 & Special Dividend Rs 131': as many dividends as amounts -> add them; otherwise the first amount
             amt = sum(found) if (words > 1 and len(found) <= words) else found[0]

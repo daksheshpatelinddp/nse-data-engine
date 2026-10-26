@@ -234,10 +234,13 @@ def days_with_indices(conn):
     return {r[0] for r in conn.execute("SELECT DISTINCT date FROM ohlcv WHERE is_index = 1")}
 
 
-def fetch_missing_days(get_conn, years, session, get, delay=0.2, recheck=False, deadline=None, log=print, recent_days=14, date_min=None, date_max=None):
+def fetch_missing_days(get_conn, years, session, get, delay=0.2, recheck=False, deadline=None, log=print, recent_days=14, date_min=None, date_max=None, give_up_after=None):
     """For every trading day without index rows: download NSE's all-indices file and store it.
     get_conn(year_str) -> sqlite connection of that year.  deadline = time.time() limit or None."""
-    stats = {"stored_days": 0, "rows": 0, "missing": 0, "skipped_known_missing": 0}
+    if give_up_after is None:
+        give_up_after = int(os.getenv("INDEX_GIVEUP", "60") or 0)     # this many days in a row without a file -> leave the rest of that year for a later run
+    stats = {"stored_days": 0, "rows": 0, "missing": 0, "skipped_known_missing": 0, "gave_up_years": []}
+    checked = 0
     today = datetime.now().date()
     stopped = None
     for y in years:
@@ -245,7 +248,13 @@ def fetch_missing_days(get_conn, years, session, get, delay=0.2, recheck=False, 
         ensure_tables(conn)
         have = days_with_indices(conn)
         known_missing = {r[0] for r in conn.execute("SELECT date FROM index_checked WHERE status = 'missing'")}
+        in_row = 0
         for d in trading_dates(conn, y):
+            if give_up_after and in_row >= give_up_after:
+                stats["gave_up_years"].append(y)
+                log(f"[INDICES] {y}: {in_row} days in a row without an index file at NSE - rest of {y} skipped for now "
+                    f"(each run tries {give_up_after} more days; put CSV files in data/index_files/ for these years)")
+                break
             if d in have or (date_min and d < date_min) or (date_max and d > date_max):
                 continue
             age = (today - datetime.strptime(d, "%Y-%m-%d").date()).days
@@ -256,13 +265,18 @@ def fetch_missing_days(get_conn, years, session, get, delay=0.2, recheck=False, 
                 stopped = d
                 break
             rows, src, err = fetch_index_day(session, datetime.strptime(d, "%Y-%m-%d"), get)
+            checked += 1
+            if checked % 50 == 0:
+                log(f"[INDICES] {checked} days asked so far (at {d}): stored {stats['stored_days']}, no file {stats['missing']}")
             if delay:
                 time.sleep(delay)
             if rows is None:
                 stats["missing"] += 1
+                in_row += 1
                 conn.execute("INSERT OR REPLACE INTO index_checked VALUES (?, 'missing', ?)", (d, datetime.now().strftime("%Y-%m-%d")))
                 conn.commit()
                 continue
+            in_row = 0
             n = store_rows(conn, rows)
             remember_names(rows)
             conn.execute("INSERT OR REPLACE INTO index_checked VALUES (?, 'ok', ?)", (d, datetime.now().strftime("%Y-%m-%d")))
