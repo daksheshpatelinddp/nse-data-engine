@@ -135,6 +135,7 @@ jobs:
         INDEX_RECHECK: ${{ github.event.inputs.index_recheck || 'false' }}
         INDEX_API_BACKFILL: ${{ github.event.inputs.index_api_backfill || 'false' }}
         WEEKEND_MODE: ${{ github.event.inputs.scan_all_weekends == 'true' && 'all' || '' }}
+        PYTHONUNBUFFERED: '1'        # show the log lines as they happen
         MAX_RUNTIME_MINUTES: '270'   # stop downloading after 4.5 h so the results can still be saved (GitHub's limit is 6 h)
 
     - name: Commit and Push Updated Databases
