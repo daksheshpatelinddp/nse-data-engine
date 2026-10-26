@@ -46,4 +46,10 @@ r = conn("2020").execute("SELECT symbol, date, close, is_index FROM ohlcv ORDER 
 assert got == 2 and r[0][:2] == ("^NIFTY50", "2020-01-02") and r[0][3] == 1, (got, r)
 assert os.path.exists(os.path.join(os.environ["INDEX_FILES_DIR"], "done", "Nifty 50_Historical_PR_01012020to31012020.csv"))
 assert indices.import_index_files(conn, log=print) == 0
+# a single manually loaded index must not hide the day from NSE's full daily file
+c = sqlite3.connect(":memory:")
+c.execute("CREATE TABLE ohlcv (symbol TEXT, date TEXT, open REAL, high REAL, low REAL, close REAL, volume INTEGER, is_index INTEGER DEFAULT 0, delivery INTEGER, PRIMARY KEY (symbol, date))")
+for k in range(120): c.execute("INSERT INTO ohlcv VALUES (?,?,1,1,1,1,1,0,1)", (f"S{k}", "2010-01-04"))
+c.execute("INSERT INTO ohlcv VALUES ('^NIFTY50','2010-01-04',1,1,1,1,0,1,NULL)"); c.commit()
+indices.ensure_tables(c); assert "2010-01-04" not in indices.days_with_indices(c)
 print("ALL OK"); shutil.rmtree(tmp, ignore_errors=True)
