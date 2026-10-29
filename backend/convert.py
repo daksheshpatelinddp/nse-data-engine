@@ -195,7 +195,7 @@ def history_fingerprint(files):
     h = hashlib.sha1()
     for year, path in files:
         h.update(f"{year}:{_file_sha1(path)};".encode())
-    h.update(f"bucket{HIST_BUCKET_SIZE};layout{HIST_LAYOUT_VERSION}".encode())
+    h.update(f"bucket{HIST_BUCKET_SIZE};layout{HIST_LAYOUT_VERSION};pack{PACK_VERSION}".encode())   # a new pack format rebuilds the history once
     if ADJ and ADJ.signature:
         h.update(f"dividends:{ADJ.signature}".encode())      # a new dividend changes every older price of that stock: rebuild the history
     return h.hexdigest()
@@ -218,11 +218,11 @@ import zlib
 import struct
 import numpy as np
 
-PACK_VERSION = 1
+PACK_VERSION = 2          # v2: volume/delivery as int32 (-1 = unknown), bytes regrouped into 4 byte-planes; readers still accept v1 blocks
 RECENT_BARS = int(os.getenv("RECENT_BARS", "400") or 400)
 
 
-def encode_pack_block(dates, o, h, l, c, v, dq):
+def encode_pack_block_v1(dates, o, h, l, c, v, dq):
     """One stock -> compressed bytes. Layout before compression (little endian):
        'AB', version, mode, n(u32), scale(i32) | dates: i32 deltas | close: i32 deltas |
        open-close, high-close, low-close: i32 | padding to 8 bytes | volume f64 | delivery f64.
@@ -243,7 +243,7 @@ def encode_pack_block(dates, o, h, l, c, v, dq):
         d[1:] = np.diff(a)
         return d
 
-    parts = [struct.pack("<2sBBIi", b"AB", PACK_VERSION, 1 if scale else 2, n, scale),
+    parts = [struct.pack("<2sBBIi", b"AB", 1, 1 if scale else 2, n, scale),
              delta(days).astype("<i4").tobytes()]
     if scale:
         oc, hc, lc, cc = cents
@@ -257,6 +257,49 @@ def encode_pack_block(dates, o, h, l, c, v, dq):
     parts.append(np.asarray(v, dtype="<f8").tobytes())
     parts.append(np.asarray(dq, dtype="<f8").tobytes())
     return zlib.compress(b"".join(parts), 9)
+
+
+def encode_pack_block(dates, o, h, l, c, v, dq):
+    """One stock -> compressed bytes, pack format v2 (little endian), before compression:
+       'AB', 2, mode(1), n(u32), scale(i32)  = 12-byte header, then 7 int32 arrays of n values each:
+       date deltas | close deltas | open-close | high-close | low-close | volume | delivery  (volume/delivery: -1 = unknown)
+       and those 7*n int32 values are stored as 4 BYTE-PLANES: all first bytes, then all second bytes, ...
+       (the high bytes are nearly always 0 or 255, so zlib squeezes them to almost nothing).
+       When a block cannot be stored this way (prices not exact, or volume does not fit int32) the v1 layout is written
+       instead; readers accept both."""
+    n = len(dates)
+    days = np.array(dates, dtype="datetime64[D]").astype("int64")
+    arrs = [np.asarray(a, dtype="float64") for a in (o, h, l, c)]
+    scale = 0
+    for sc in (100, 10000):
+        cents = [np.rint(a * sc) for a in arrs]
+        if all(np.all(np.abs(a * sc - x) < 1e-5) and np.all(np.abs(x) < 2 ** 30) for a, x in zip(arrs, cents)):
+            scale = sc
+            break
+
+    def ints_or_unknown(a):
+        a = np.asarray(a, dtype="float64")
+        bad = np.isnan(a)
+        x = np.where(bad, -1.0, np.rint(a))
+        ok = bool(np.all(np.abs(a[~bad] - x[~bad]) < 1e-9) and np.all(x >= -1) and np.all(x < 2 ** 31 - 1)
+                  and not np.any((x == -1) & ~bad))
+        return x, ok
+
+    vol, vol_ok = ints_or_unknown(v)
+    dlv, dlv_ok = ints_or_unknown(dq)
+    if not (scale and vol_ok and dlv_ok):
+        return encode_pack_block_v1(dates, o, h, l, c, v, dq)
+
+    def delta(a):
+        d = np.empty(len(a), dtype="int64")
+        d[0] = a[0]
+        d[1:] = np.diff(a)
+        return d
+
+    oc, hc, lc, cc = cents
+    body = np.concatenate([delta(days), delta(cc), oc - cc, hc - cc, lc - cc, vol, dlv]).astype("<i4")
+    planes = np.frombuffer(body.tobytes(), dtype=np.uint8).reshape(-1, 4).T.tobytes()
+    return zlib.compress(struct.pack("<2sBBIi", b"AB", 2, 1, n, scale) + planes, 9)
 
 
 def pack_group(g):
