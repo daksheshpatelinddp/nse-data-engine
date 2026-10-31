@@ -43,7 +43,7 @@ assert names == ["IMPORT_README.txt", "export-report.txt", "nse_2024.csv", "nse_
 def rows(year):
     with open(os.path.join(out, f"nse_{year}.csv"), newline="") as f: return list(csv.DictReader(f))
 r24, r25, r26 = rows(2024), rows(2025), rows(2026)
-assert list(r24[0].keys()) == ["Ticker", "Date", "Open", "High", "Low", "Close", "Volume", "Delivery"]
+assert list(r24[0].keys()) == ["Ticker", "Date", "Open", "High", "Low", "Close", "Volume", "Delivery", "DeliveryPct"]
 assert len(r24) == 9 and len(r25) == 9 and len(r26) == 6, (len(r24), len(r25), len(r26))              # 3 symbols x days; NSE and BAD are not there
 assert {r["Ticker"] for r in r24} == {"AAA", "BBB", "^NIFTY50"}
 def get(rs, t, d): return next(r for r in rs if r["Ticker"] == t and r["Date"] == d)
@@ -54,6 +54,7 @@ assert get(r25, "AAA", "2025-09-01")["Close"] == "50.0000" and get(r26, "AAA", "
 assert get(r24, "^NIFTY50", "2024-01-02")["Close"] == "20050.0000", "indices are never dividend adjusted"
 assert get(r24, "BBB", "2024-01-02")["Close"] == "205.1235" and get(r24, "BBB", "2024-01-02")["Delivery"] == "", "4 decimals; unknown delivery stays empty"
 assert get(r24, "AAA", "2024-01-02")["Delivery"] == "500" and get(r24, "AAA", "2024-01-02")["Volume"] == "1000"
+assert float(get(r24, "AAA", "2024-01-02")["DeliveryPct"]) == 50.0 and get(r24, "BBB", "2024-01-02")["DeliveryPct"] == "" and get(r24, "^NIFTY50", "2024-01-02")["DeliveryPct"] == "", "delivery % = 500 / 1000 x 100; empty when delivery is unknown or volume is 0"
 print("hand-calculated prices ok")
 
 # ---- the SAME data as the files for R2: run convert.py's own conversion and compare every row
@@ -88,7 +89,7 @@ out_z = os.path.join(tmp, "export_zip"); assert export_csv.main(["--db", "nse", 
 z = zipfile.ZipFile(os.path.join(out_z, "nse-amibroker-csv.zip")); zn = z.namelist()
 assert set(zn) == set(names), zn
 fmt = z.read("nse_eod.format").decode()
-assert fmt.splitlines()[0] == "$FORMAT Ticker, Date_YMD, Open, High, Low, Close, Volume, Aux1" and "$SKIPLINES 1" in fmt and "$SEPARATOR ," in fmt, fmt
+assert fmt.splitlines()[0] == "$FORMAT Ticker, Date_YMD, Open, High, Low, Close, Volume, Aux1, Aux2" and "$SKIPLINES 1" in fmt and "$SEPARATOR ," in fmt, fmt
 assert b"\r\n" in z.read("nse_2024.csv")
 readme = z.read("IMPORT_README.txt").decode(); assert "csv-export" in readme and "Import ASCII" in readme and "do NOT let AmiBroker adjust" in readme, readme
 rep = z.read("export-report.txt").decode(); assert "2024:" in rep and "cash dividends applied" in rep, rep
