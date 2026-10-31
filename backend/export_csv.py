@@ -9,7 +9,8 @@ Because it uses convert.py's own reader and adjuster, a change there changes bot
 Writes into --out:   <db>_<year>.csv (one per year; a year bigger than --split-mb MB is written as one file per month: <db>_<year>-<month>.csv),
 <db>_eod.format (AmiBroker import definition), IMPORT_README.txt, export-report.txt.   --zip also makes <db>-amibroker-csv.zip.
 Nothing is sent anywhere: the workflow (export-csv.yml) commits the folder to a branch of the repository. No R2 is used.
-Columns:  Ticker, Date (YYYY-MM-DD), Open, High, Low, Close (4 decimals), Volume (shares), Delivery (shares, empty when NSE has no figure).
+Columns:  Ticker, Date (YYYY-MM-DD), Open, High, Low, Close (4 decimals), Volume (shares), Delivery (shares, empty when NSE has no figure),
+DeliveryPct (= Delivery / Volume x 100, empty when either is unknown). In AmiBroker: Aux1 = Delivery, Aux2 = DeliveryPct.
 """
 import argparse
 import glob
@@ -24,10 +25,10 @@ import pandas as pd
 import dividends
 import convert
 
-COLUMNS = ["Ticker", "Date", "Open", "High", "Low", "Close", "Volume", "Delivery"]
+COLUMNS = ["Ticker", "Date", "Open", "High", "Low", "Close", "Volume", "Delivery", "DeliveryPct"]
 MAX_FILE_BYTES = 95e6                      # GitHub refuses files over 100 MB
 
-FORMAT_FILE = """$FORMAT Ticker, Date_YMD, Open, High, Low, Close, Volume, Aux1
+FORMAT_FILE = """$FORMAT Ticker, Date_YMD, Open, High, Low, Close, Volume, Aux1, Aux2
 $SKIPLINES 1
 $SEPARATOR ,
 $CONT 1
@@ -42,7 +43,8 @@ These CSV files hold the SAME prices as the web app: end-of-day bars of every st
 rights, demergers AND cash dividends (the dividend adjustment the app applies when it converts the data).
 So do NOT let AmiBroker adjust them again (do not add splits in Symbol > Information).
 
-Columns: Ticker, Date (YYYY-MM-DD), Open, High, Low, Close, Volume (shares), Delivery (shares, empty when unknown -> AmiBroker Aux1).
+Columns: Ticker, Date (YYYY-MM-DD), Open, High, Low, Close, Volume (shares), Delivery (shares, empty when unknown),
+DeliveryPct (Delivery / Volume x 100, empty when unknown). The database holds no other fields (no turnover, no number of trades).
 Index names start with ^ (for example ^NIFTY50). One file per year: {db}_<year>.csv; a big year is split in monthly files
 ({db}_<year>-<month>.csv, for example {db}_2024-03.csv). Just import all of them.
 
@@ -55,7 +57,7 @@ Import (once):
     Importing takes a few minutes. Importing the same files again updates the bars.
  5. In Analysis use "Apply to: All symbols" (or a filter) and the same date range as in the web app.
 
-Delivery is stored in the Aux1 field:  Aux1  in AFL.   Checks: export-report.txt lists rows, stocks and the sum of all closes per year.
+In AFL:  Aux1 = delivery quantity,  Aux2 = delivery %.   Checks: export-report.txt lists rows, stocks and the sum of all closes per year.
 """
 
 
@@ -78,11 +80,14 @@ def read_year(db_file):
 
 
 def to_csv_frame(df):
+    vol = pd.to_numeric(df["volume"], errors="coerce")
+    pct = (df["delivery"] / vol.where(vol > 0) * 100).round(2)          # empty when delivery or volume is unknown
     out = pd.DataFrame({
         "Ticker": df["symbol"].astype(str), "Date": df["date"].astype(str),
         "Open": df["open"].round(4), "High": df["high"].round(4), "Low": df["low"].round(4), "Close": df["close"].round(4),
         "Volume": pd.to_numeric(df["volume"], errors="coerce").fillna(0).astype("int64"),
         "Delivery": df["delivery"].round(0).astype("Int64"),                        # nullable integer: empty when unknown
+        "DeliveryPct": pct,
     })
     return out[COLUMNS]
 
