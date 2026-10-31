@@ -1,0 +1,85 @@
+name: Export CSV for AmiBroker
+
+# Turns the yearly .db files into CSV files with EXACTLY the prices the web app reads from R2 (split/bonus/rights/demerger adjusted as stored in the
+# .db files, plus the cash-dividend adjustment convert.py applies), for the original AmiBroker. Run by hand: Actions > Export CSV for AmiBroker > Run workflow.
+# The CSV files are committed to the branch "csv-export" of THIS repository (nothing is written to R2). A year bigger than "max_file_mb" is split in
+# monthly files. The branch is rewritten as one new commit on every run, so the repository does not grow with each export.
+# Download on your laptop: the run summary has the link (repository > branch csv-export > Code > Download ZIP).
+on:
+  workflow_dispatch:
+    inputs:
+      database:
+        description: 'Database to export (file names <database>_<year>.db)'
+        default: 'nse'
+      from_year:
+        description: 'First year (empty = all years)'
+        default: ''
+      to_year:
+        description: 'Last year (empty = all years)'
+        default: ''
+      max_file_mb:
+        description: 'A year bigger than this many MB is split in monthly files (GitHub warns at 50 MB, refuses 100 MB)'
+        default: '40'
+
+jobs:
+  export:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    permissions:
+      contents: write        # to write the csv-export branch with the built-in token (no secret needed)
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas pyarrow boto3
+
+      - name: Dividend list (the same step the converter runs, cash dividends are applied to the prices)
+        continue-on-error: true
+        run: python backend/dividends.py --report
+
+      - name: Export CSV files
+        env:
+          DB: ${{ inputs.database }}
+          FROM_YEAR: ${{ inputs.from_year }}
+          TO_YEAR: ${{ inputs.to_year }}
+          MAX_MB: ${{ inputs.max_file_mb }}
+        run: |
+          set -o pipefail
+          ARGS="--db ${DB:-nse} --out $RUNNER_TEMP/csv --split-mb ${MAX_MB:-40}"
+          if [ -n "$FROM_YEAR" ]; then ARGS="$ARGS --from-year $FROM_YEAR"; fi
+          if [ -n "$TO_YEAR" ]; then ARGS="$ARGS --to-year $TO_YEAR"; fi
+          python backend/export_csv.py $ARGS 2>&1 | tee export.log
+
+      - name: Commit the CSV files to the csv-export branch
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          cd "$RUNNER_TEMP/csv"
+          git init -q -b csv-export
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "AmiBroker CSV export $(date -u +%Y-%m-%d)"
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -c http.postBuffer=524288000 push --force origin csv-export
+          {
+            echo "### AmiBroker CSV export"
+            echo "Files: $(ls *.csv | wc -l) CSV files, $(du -sh . --exclude=.git | cut -f1)"
+            echo ""
+            echo "**Download on your laptop:** https://github.com/${GITHUB_REPOSITORY}/archive/refs/heads/csv-export.zip"
+            echo ""
+            echo "Or open https://github.com/${GITHUB_REPOSITORY}/tree/csv-export and download single files."
+            echo ""
+            echo '```'
+            cat export-report.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
