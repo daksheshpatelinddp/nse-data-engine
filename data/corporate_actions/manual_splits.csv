@@ -8,3 +8,4 @@ KRBL,2010-02-10,10,face value 10 -> 1
 ENGINERSIN,2010-05-06,2,2-for-1 split
 UNOMINDA,2016-09-12,5,5-for-1 split
 LTFOODS,2017-02-07,10,face value 10 -> 1
+TATAINVEST,2005-07-07,10,10-for-1 (close 425.05 -> 42.02 in one day; found by find_jumps)
