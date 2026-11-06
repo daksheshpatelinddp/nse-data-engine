@@ -19,7 +19,7 @@ data["BONUS"] = np.where(days < pd.Timestamp("2007-09-19"), data["BONUS"] * 1.5,
 rows = {2006: [], 2007: [], 2008: []}
 for s, c in data.items():
     for d, v in zip(days, c):
-        rows[d.year].append((s, d.strftime("%Y-%m-%d"), float(v), float(v) * 1.01, float(v) * 0.99, float(v), 1000, 400.0))
+        rows[d.year].append((s, d.strftime("%Y-%m-%d"), float(v), float(v) * 1.01, float(v) * 0.99, float(v), (5000 if (s == "UNADJ" and d >= ex) else 1000), 400.0))
 rows[2007].append(("^NIFTY50", "2007-06-28", 1.0, 1.0, 1.0, 1.0, 0, None))
 for y, r in rows.items():
     c = sqlite3.connect(os.path.join(dbd, f"nse_{y}.db"))
@@ -61,11 +61,18 @@ class Div:
 ch = splits.chain(Div(), a2); check(list(ch.adjust(t).close) == [50.0, 100.0, 500.0], "chain applies both")
 check(splits.chain(None, splits.SplitAdjuster([])).signature == "", "empty chain has an empty signature")
 check(splits.chain(Div(), a2).signature != splits.chain(Div(), splits.SplitAdjuster([])).signature, "signature changes with the events")
+# a one-day spike that comes back is NOT a split; a crash without the volume shift is not "high"
+_d = pd.bdate_range("2007-01-01", periods=60); _c = np.full(60, 100.0); _c[30] = 40.0
+_s = pd.DataFrame({"symbol": "SPIKE", "date": _d.strftime("%Y-%m-%d"), "open": _c, "close": _c, "volume": 1000})
+_k = find_jumps.find(_s); check(len(_k) >= 1 and (_k.confidence == "low").all(), f"spike that recovers is low: {list(_k.confidence)}")
+_c2 = np.where(np.arange(60) < 30, 100.0, 50.0); _s2 = pd.DataFrame({"symbol": "CRASH", "date": _d.strftime("%Y-%m-%d"), "open": _c2, "close": _c2, "volume": 1000})
+_k2 = find_jumps.find(_s2); check(list(_k2.confidence) == ["medium"], f"permanent halving with unchanged volume is medium: {list(_k2.confidence)}")
 # jump finder
 cand = find_jumps.find(find_jumps.load(dbd), splits.read_events(f))
 got = {(r.symbol, r.date): r for r in cand.itertuples()}
 check(("UNADJ", "2007-06-28") in got and got[("UNADJ", "2007-06-28")].likely_factor == 5, f"UNADJ found with factor 5: {list(got)}")
 check(got[("UNADJ", "2007-06-28")].already_listed == "yes", "marked as already listed")
-check(("BONUS", "2007-09-19") in got and got[("BONUS", "2007-09-19")].likely_factor in (1.5, 2) or ("BONUS", "2007-09-19") not in got, "bonus 1.5 is under the threshold and may not be listed")
+check(got[("UNADJ", "2007-06-28")].confidence == "high", f"real split with volume x5 is high confidence: {got[('UNADJ', '2007-06-28')].confidence} {got[('UNADJ', '2007-06-28')].note}")
+check(("BONUS", "2007-09-19") in got and got[("BONUS", "2007-09-19")].likely_factor == 1.5, f"1:2 bonus (-33 %, beyond the 20 % band) is found: {list(got)}")
 check(not any(s.startswith("^") for s, d in got), "indices ignored")
 print(f"{ok} passed, {fail} failed"); sys.exit(1 if fail else 0)
