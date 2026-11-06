@@ -9,13 +9,14 @@ Nothing in the .db files is changed. Like dividends, these events are applied wh
 - `data/corporate_actions/manual_splits.csv` - the events that are applied (9 confirmed ones are in it).
 - `backend/splits.py` - applies them (prices before ex_date / factor, volume and delivery x factor); skips an event whose drop is not visible in the data
   (already adjusted), so nothing is adjusted twice.
-- `backend/find_jumps.py` + workflow "NSE - find missing splits (report only)" - lists every one-day move below 0.55 or above 1.8 in the .db files.
+- `backend/find_jumps.py` + workflow "NSE - find missing splits (report only)" - lists every one-day close move beyond the 20 % price band (below 0.78 or above 1.25) in the .db files.
 
 ## How to find and fix the rest
 1. Run the workflow "NSE - find missing splits (report only)" (or `python backend/find_jumps.py`). Download `split_candidates.csv`.
-2. For each line check the chart (TradingView / NSE). A real split shows a clean drop to about 1/factor on the ex-date.
-   Genuine crashes beyond -45 % in one day are rare on NSE; gaps of weeks (column `note`) may be suspensions.
-3. Copy the confirmed lines from `split_candidates_paste.csv` into `manual_splits.csv` (fix `factor` if the suggested one is not exact).
+2. The finder now sorts candidates by evidence (column `confidence` in `split_candidates.csv`):
+   high = clean ratio, no gap, the price level moved for good AND the volume followed the ratio;  medium = same without the volume proof;  low = the rest
+   (column `note` says why). Start with `split_high_confidence_paste.csv`, then `split_medium_confidence_paste.csv`.
+3. Check the lines on a chart (TradingView / NSE): a real split shows a clean drop to about 1/factor on the ex-date. Copy the confirmed lines into `manual_splits.csv` (fix `factor` if the suggested one is not exact).
 4. Run the R2 upload workflow with FORCE_ALL = true. The history is rebuilt once because the adjustment signature changed.
 5. Re-run find_jumps: confirmed lines now show `already_listed = yes`.
 
@@ -23,4 +24,4 @@ factor = new shares per old share: 5-for-1 split = 5, 1:1 bonus = 2, 1:2 bonus =
 
 ## Settings (environment variables)
 SPLIT_FILE (other csv path), SPLIT_CHECK=false (skip the "already adjusted" check), SPLIT_ADJUST_VOLUME=false (leave volume alone),
-JUMP_LOW / JUMP_HIGH (finder thresholds).
+JUMP_LOW (0.78) / JUMP_HIGH (1.25): finder thresholds.
