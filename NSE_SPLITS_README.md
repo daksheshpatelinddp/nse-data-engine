@@ -25,3 +25,10 @@ factor = new shares per old share: 5-for-1 split = 5, 1:1 bonus = 2, 1:2 bonus =
 ## Settings (environment variables)
 SPLIT_FILE (other csv path), SPLIT_CHECK=false (skip the "already adjusted" check), SPLIT_ADJUST_VOLUME=false (leave volume alone),
 JUMP_LOW (0.78) / JUMP_HIGH (1.25): finder thresholds.
+
+## Checking candidates automatically (Yahoo)
+`backend/verify_splits.py` + workflow "NSE - verify candidate splits on Yahoo (report only)".
+Put the lines to check (symbol,ex_date,factor,note) into `data/review/to_verify.csv`, commit, run the workflow, download "split-verification":
+- `verified_apply.csv`  lines Yahoo confirms (or with another ratio): append them to `manual_splits.csv`.
+- `verify_report.csv`   every line with its status: confirmed / ratio_differs / not_on_yahoo / no_symbol.
+Yahoo misses some old events, so "not_on_yahoo" means "check by hand or leave out", not "false".
