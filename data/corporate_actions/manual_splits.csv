@@ -1,4 +1,14 @@
 symbol,ex_date,factor,note
+EIDPARRY,2005-05-27,5,5-for-1 split (seen as -78% in the AmiBroker trade list)
+THERMAX,2006-03-31,5,5-for-1 split
+ABB,2007-06-28,5,5-for-1 split
+DIVISLAB,2007-08-03,5,5-for-1 split
+ARE&M,2007-09-19,5,5-for-1 split (Amara Raja)
+KRBL,2010-02-10,10,face value 10 -> 1
+ENGINERSIN,2010-05-06,2,2-for-1 split
+UNOMINDA,2016-09-12,5,5-for-1 split
+LTFOODS,2017-02-07,10,face value 10 -> 1
+TATAINVEST,2005-07-07,10,10-for-1 (close 425.05 -> 42.02 in one day; found by find_jumps)
 SUNPHARMA,2000-03-08,3,"auto-high: close 202.34 -> 64.98, volume x2.03, fit 0.037"
 PFIZER,2000-06-14,2,"auto-high: close 987.00 -> 502.60, volume x1.86, fit 0.018"
 VISUALSOFT,2000-08-08,3,"auto-high: close 3846.55 -> 1336.65, volume x1.93, fit 0.042"
