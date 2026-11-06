@@ -1,0 +1,20 @@
+name: NSE - find missing splits (report only)
+# Reads the .db files, lists one-day price jumps that NSE circuit limits do not allow (a missing split or bonus).
+# Writes nothing to R2 and changes no data. Download the artifact "split-candidates", check each line on a chart,
+# then copy the confirmed lines into data/corporate_actions/manual_splits.csv.
+on:
+  workflow_dispatch:
+jobs:
+  find:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install pandas
+      - run: python backend/find_jumps.py data/databases data/review
+      - uses: actions/upload-artifact@v4
+        with:
+          name: split-candidates
+          path: data/review/*.csv
