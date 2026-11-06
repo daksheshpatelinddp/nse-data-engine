@@ -11,10 +11,11 @@ import pyarrow.parquet as pq
 import boto3
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import splits             # manual split/bonus events (data/corporate_actions/manual_splits.csv), also applied only while building
 import dividends          # cash-dividend adjustment (computed here from data/corporate_actions/dividends.csv, never written into the .db files)
 import indices            # NSE index data (names like ^NIFTY50) travels in the same files as the stocks
 
-ADJ = None                # set in __main__: the dividend adjuster (does nothing when there are no dividends or DIVIDEND_ADJUST=false)
+ADJ = None                # set in __main__: dividends + manual splits, in that order (does nothing when there are no dividends or DIVIDEND_ADJUST=false)
 
 
 def _adj(df):
@@ -197,7 +198,7 @@ def history_fingerprint(files):
         h.update(f"{year}:{_file_sha1(path)};".encode())
     h.update(f"bucket{HIST_BUCKET_SIZE};layout{HIST_LAYOUT_VERSION};pack{PACK_VERSION}".encode())   # a new pack format rebuilds the history once
     if ADJ and ADJ.signature:
-        h.update(f"dividends:{ADJ.signature}".encode())      # a new dividend changes every older price of that stock: rebuild the history
+        h.update(f"adjust:{ADJ.signature}".encode())         # a new dividend or split changes every older price of that stock: rebuild the history
     return h.hexdigest()
 
 
@@ -564,7 +565,7 @@ if __name__ == "__main__":
         print("No database files matching pattern '<database>_<year>.db' found.")
     else:
         print(f"Discovered databases: {db_list}")
-        ADJ = dividends.build_adjuster(DB_DIR)
+        ADJ = splits.chain(dividends.build_adjuster(DB_DIR), splits.build_adjuster(DB_DIR))   # dividends first, then splits
         convert_and_upload(db_list)
         build_all_histories(db_list)
         upload_index_names()
