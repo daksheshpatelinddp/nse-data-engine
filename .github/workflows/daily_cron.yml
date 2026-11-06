@@ -2,7 +2,7 @@ name: Daily NSE Fetcher
 
 on:
   schedule:
-    - cron: '0 13 * * 1-5' # Runs automatically Monday to Friday
+    - cron: '0 15 * * 1-5' # Runs automatically Monday to Friday
   workflow_dispatch:
     inputs:
       start_date:
