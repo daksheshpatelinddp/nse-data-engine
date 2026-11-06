@@ -1,0 +1,19 @@
+name: NSE - verify candidate splits on Yahoo (report only)
+# Put the candidate lines (symbol,ex_date,factor,note) into data/review/to_verify.csv, commit, run this workflow.
+# It asks Yahoo Finance for the split history of every stock in the file and writes verify_report.csv and verified_apply.csv
+# (artifact "split-verification"). Nothing is written to R2 and no data is changed.
+on:
+  workflow_dispatch:
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: python backend/verify_splits.py data/review/to_verify.csv data/review
+      - uses: actions/upload-artifact@v4
+        with:
+          name: split-verification
+          path: data/review/verify_report.csv data/review/verified_apply.csv
