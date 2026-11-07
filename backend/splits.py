@@ -29,6 +29,7 @@ import pandas as pd
 
 SPLIT_FILE = os.getenv("SPLIT_FILE") or os.path.join("data", "corporate_actions", "manual_splits.csv")
 CHECK = os.getenv("SPLIT_CHECK", "true").lower() != "false"
+PRICE_DECIMALS = 4
 ADJUST_VOLUME = os.getenv("SPLIT_ADJUST_VOLUME", "true").lower() != "false"
 PRICE_COLS = ("open", "high", "low", "close")
 
@@ -131,7 +132,9 @@ class SplitAdjuster:
                 continue
             for c in PRICE_COLS:
                 if c in out.columns:
-                    out.loc[rows, c] = out.loc[rows, c] / div[rows]
+                    # 4 decimals, like dividends.py: the R2 pack stores prices as integers (price x 10000); a price such as 5.846667 would
+                    # force the slow float64 layout that the app cannot always read ("start offset of Float64Array should be a multiple of 8")
+                    out.loc[rows, c] = (out.loc[rows, c] / div[rows]).round(PRICE_DECIMALS)
             if ADJUST_VOLUME:
                 for c in ("volume", "delivery"):
                     if c in out.columns:
@@ -142,7 +145,7 @@ class SplitAdjuster:
                             out.loc[rows, c] = scaled.round()
                             out[c] = out[c].round().astype(col.dtype)
                         else:
-                            out.loc[rows, c] = scaled
+                            out.loc[rows, c] = scaled.round()      # whole shares, so the pack can keep volume as int32
         return out
 
 
