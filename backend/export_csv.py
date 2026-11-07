@@ -23,6 +23,7 @@ import zipfile
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pandas as pd
 import dividends
+import splits
 import convert
 
 COLUMNS = ["Ticker", "Date", "Open", "High", "Low", "Close", "Volume", "Delivery", "DeliveryPct"]
@@ -129,7 +130,7 @@ def package(db_id, out_dir, written, years, report, make_zip=False):
     fmt = f"{db_id}_eod.format"
     open(os.path.join(out_dir, fmt), "w", newline="\r\n").write(FORMAT_FILE)
     open(os.path.join(out_dir, "IMPORT_README.txt"), "w", newline="\r\n").write(README.format(db=db_id, stamp=stamp, first_year=min(years)))
-    adj = "cash dividends applied (dividends.csv)" if convert.ADJ else "NO dividend adjustment (DIVIDEND_ADJUST=false or no dividends.csv)"
+    adj = "cash dividends + manual splits (manual_splits.csv) applied" if convert.ADJ else "NO dividend adjustment (DIVIDEND_ADJUST=false or no dividends.csv)"
     open(os.path.join(out_dir, "export-report.txt"), "w", newline="\r\n").write(
         f"{db_id} export, {stamp}\nPrices: split/bonus/rights/demerger adjusted (stored in the .db files) + {adj}\n\n" + "\n".join(report) + "\n")
     if not make_zip:
@@ -154,7 +155,7 @@ def main(argv=None):
             files.append((int(m.group(1)), p))
     if not files:
         print(f"No {a.db}_<year>.db files in {a.db_dir}"); return 1
-    convert.ADJ = dividends.build_adjuster(a.db_dir)                    # the same adjuster convert.py builds
+    convert.ADJ = splits.chain(dividends.build_adjuster(a.db_dir), splits.build_adjuster(a.db_dir))                    # the same adjuster convert.py builds
     written, years, report = export(a.db, files, a.out, a.from_year, a.to_year, a.split_mb)
     if not written:
         print("Nothing exported (check the year range)."); return 1
