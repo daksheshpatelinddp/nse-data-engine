@@ -2,7 +2,7 @@ name: Daily NSE Fetcher
 
 on:
   schedule:
-    - cron: '0 15 * * 1-5' # Runs automatically Monday to Friday
+    - cron: '30 14 * * 1-5' # 8:00 PM IST, Monday to Friday (NSE files are out by about 7 PM IST)
   workflow_dispatch:
     inputs:
       start_date:
@@ -102,9 +102,9 @@ jobs:
           if [ -n "$LAST_DATE" ]; then
             START=$(date -d "$LAST_DATE + 1 day" +%Y-%m-%d)
           else
-            START=$(date -d '1 day ago' +%Y-%m-%d)
+            START=$(date +%Y-%m-%d)
           fi
-          END=$(date -d '1 day ago' +%Y-%m-%d)
+          END=$(date +%Y-%m-%d)   # today (UTC date = IST date at 14:30 UTC); a day without a file is skipped quietly
           echo "start_date=$START" >> "$GITHUB_OUTPUT"
           echo "end_date=$END" >> "$GITHUB_OUTPUT"
         else

@@ -1,0 +1,96 @@
+name: Publish ALL - adjust, R2 (parquet/packs) and AmiBroker CSV in one run
+
+# ONE job, ONE checkout, ONE adjuster (dividends, then manual splits): the same .db files are read once for R2 and once for the AmiBroker CSV,
+# so the web app and AmiBroker cannot get different data. A check at the end compares the CSV with the databases and fails the run if they differ.
+# Runs by hand (Actions > Publish ALL > Run workflow) and automatically after "Daily NSE Fetcher". Remove the workflow_run trigger from
+# convert.yml (or delete convert.yml) so the daily data is not converted twice.
+on:
+  workflow_dispatch:
+    inputs:
+      force_all:
+        description: 'Rebuild ALL history on R2 (use after changing manual_splits.csv, dividends or any adjustment). Daily runs leave it off.'
+        type: boolean
+        default: true
+      csv_export:
+        description: 'Also export the AmiBroker CSV files (csv-export branch)'
+        type: boolean
+        default: true
+      max_file_mb:
+        description: 'A year bigger than this many MB is split in monthly CSV files'
+        default: '40'
+  workflow_run:
+    workflows: ["Daily NSE Fetcher"]
+    types: [completed]
+
+concurrency:
+  group: publish-all
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    permissions:
+      contents: write        # to write the csv-export branch with the built-in token
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas pyarrow boto3
+
+      - name: Dividend list and report
+        continue-on-error: true
+        run: python backend/dividends.py --report
+
+      - name: Convert and upload to R2
+        env:
+          R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
+          R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
+          R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
+          FORCE_ALL: ${{ github.event_name == 'workflow_dispatch' && inputs.force_all && 'true' || 'false' }}
+        run: python backend/convert.py
+
+      - name: Export CSV for AmiBroker (same databases, same adjuster)
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.csv_export }}
+        env:
+          MAX_MB: ${{ inputs.max_file_mb }}
+        run: |
+          set -o pipefail
+          python backend/export_csv.py --db nse --out "$RUNNER_TEMP/csv" --split-mb "${MAX_MB:-40}" 2>&1 | tee export.log
+
+      - name: Check CSV = database = what went to R2
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.csv_export }}
+        run: python backend/verify_export.py --db nse --csv-dir "$RUNNER_TEMP/csv"
+
+      - name: Publish the CSV files (branch csv-export)
+        if: ${{ github.event_name != 'workflow_dispatch' || inputs.csv_export }}
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          cd "$RUNNER_TEMP/csv"
+          git init -q -b csv-export
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -A
+          git commit -q -m "AmiBroker CSV export $(date -u +%Y-%m-%d)"
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -c http.postBuffer=524288000 push --force origin csv-export
+          {
+            echo "### Publish ALL"
+            echo "R2 rebuilt with FORCE_ALL=${{ github.event_name == 'workflow_dispatch' && inputs.force_all }}; CSV files: $(ls *.csv | wc -l)"
+            echo ""
+            echo "**Download on your laptop:** https://github.com/${GITHUB_REPOSITORY}/archive/refs/heads/csv-export.zip"
+            echo '```'
+            cat DATA_STAMP.txt
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
