@@ -1,7 +1,7 @@
 name: Publish ALL - adjust, R2 (parquet/packs) and AmiBroker CSV in one run
 
-# ONE job, ONE checkout, ONE adjuster (dividends, then manual splits): the same .db files are read once for R2 and once for the AmiBroker CSV,
-# so the web app and AmiBroker cannot get different data. A check at the end compares the CSV with the databases and fails the run if they differ.
+# ONE job: the data is adjusted and uploaded to R2 once, then the AmiBroker CSV is made by READING THE PARQUET FILES BACK FROM R2,
+# so the web app and AmiBroker use the very same bytes. A check at the end compares the CSV with the databases and fails the run if they differ.
 # Runs by hand (Actions > Publish ALL > Run workflow) and automatically after "Daily NSE Fetcher". Remove the workflow_run trigger from
 # convert.yml (or delete convert.yml) so the daily data is not converted twice.
 on:
@@ -51,25 +51,60 @@ jobs:
         continue-on-error: true
         run: python backend/dividends.py --report
 
-      - name: Convert and upload to R2
+      - name: Restore the saved Parquet files (branch parquet-data)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force_all && 'true' || 'false' }}
+        run: |
+          set -e
+          URL="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          if git ls-remote --exit-code --heads "$URL" parquet-data >/dev/null 2>&1; then
+            git clone -q --depth 1 --branch parquet-data "$URL" "$RUNNER_TEMP/parquet"
+          elif [ "$FORCE" = "true" ]; then
+            mkdir -p "$RUNNER_TEMP/parquet"; git -C "$RUNNER_TEMP/parquet" init -q -b parquet-data
+          else
+            echo "::error::Branch parquet-data does not exist yet. Run Publish ALL by hand once with 'force_all' ticked (it creates the branch)."; exit 1
+          fi
+          ls "$RUNNER_TEMP/parquet" | head
+
+      - name: Convert and upload to R2 (and keep the same Parquet files)
         env:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
           FORCE_ALL: ${{ github.event_name == 'workflow_dispatch' && inputs.force_all && 'true' || 'false' }}
+          PARQUET_DIR: ${{ runner.temp }}/parquet
         run: python backend/convert.py
 
-      - name: Export CSV for AmiBroker (same databases, same adjuster)
+      - name: Export CSV for AmiBroker from the SAME Parquet files (no R2 download)
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.csv_export }}
         env:
+          PARQUET_DIR: ${{ runner.temp }}/parquet
           MAX_MB: ${{ inputs.max_file_mb }}
         run: |
           set -o pipefail
-          python backend/export_csv.py --db nse --out "$RUNNER_TEMP/csv" --split-mb "${MAX_MB:-40}" 2>&1 | tee export.log
+          python backend/export_csv.py --source parquet --db nse --out "$RUNNER_TEMP/csv" --split-mb "${MAX_MB:-40}" 2>&1 | tee export.log
 
-      - name: Check CSV = database = what went to R2
+      - name: Check CSV (made from the saved Parquet) = the databases rebuilt independently
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.csv_export }}
         run: python backend/verify_export.py --db nse --csv-dir "$RUNNER_TEMP/csv"
+
+      - name: Save the Parquet files in the repository (branch parquet-data)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -e
+          cd "$RUNNER_TEMP/parquet"
+          big=$(find . -name '*.parquet' -size +95M | head -1); if [ -n "$big" ]; then echo "::error::$big is over 95 MB: GitHub would refuse it"; exit 1; fi
+          ( cd nse && sha256sum *.parquet ) > MANIFEST.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git checkout -q --orphan snapshot            # one commit only: the branch never grows a history
+          git add -A
+          git commit -q -m "Parquet files uploaded to R2, $(date -u +%Y-%m-%d)"
+          git remote remove origin 2>/dev/null || true
+          git remote add origin "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          git -c http.postBuffer=524288000 push --force origin snapshot:parquet-data
 
       - name: Publish the CSV files (branch csv-export)
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.csv_export }}
@@ -87,7 +122,7 @@ jobs:
           git -c http.postBuffer=524288000 push --force origin csv-export
           {
             echo "### Publish ALL"
-            echo "R2 rebuilt with FORCE_ALL=${{ github.event_name == 'workflow_dispatch' && inputs.force_all }}; CSV files: $(ls *.csv | wc -l)"
+            echo "R2 rebuilt (the same Parquet files are saved on branch parquet-data) with FORCE_ALL=${{ github.event_name == 'workflow_dispatch' && inputs.force_all }}; CSV files: $(ls *.csv | wc -l)"
             echo ""
             echo "**Download on your laptop:** https://github.com/${GITHUB_REPOSITORY}/archive/refs/heads/csv-export.zip"
             echo '```'
