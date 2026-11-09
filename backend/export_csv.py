@@ -197,12 +197,16 @@ def main(argv=None):
     reader = None
     if a.source == "parquet":
         base = os.path.join(a.parquet_dir, a.db)
-        files = sorted((int(m.group(1)), os.path.join(base, f)) for f in (os.listdir(base) if os.path.isdir(base) else [])
-                       if (m := re.match(r"^(\d{4})\.parquet$", f)))
+        by_year = {}
+        for f in (os.listdir(base) if os.path.isdir(base) else []):
+            m = re.match(r"^(\d{4})(?:-\d{2})?\.parquet$", f)            # 2024.parquet or 2024-05.parquet (split by pack_parquet.py)
+            if m:
+                by_year.setdefault(int(m.group(1)), []).append(os.path.join(base, f))
+        files = [(y, sorted(ps)) for y, ps in sorted(by_year.items())]
         if not files:
             print(f"No {a.db}/<year>.parquet files in {a.parquet_dir}. Run Publish ALL once with 'force_all' on."); return 1
         import pyarrow.parquet as pq
-        reader = lambda path: pq.read_table(path).to_pandas().sort_values(["symbol", "date"]).reset_index(drop=True)
+        reader = lambda paths: pd.concat([pq.read_table(p).to_pandas() for p in paths], ignore_index=True).sort_values(["symbol", "date"]).reset_index(drop=True)
         convert.ADJ = None; SOURCE_R2[0] = True
         print(f"[SOURCE] saved Parquet files: {len(files)} years ({files[0][0]}..{files[-1][0]}); no adjustment is recomputed")
     elif a.source == "r2":

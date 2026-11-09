@@ -137,6 +137,8 @@ def convert_and_upload(db_files):
             keep_dir = os.getenv("PARQUET_DIR")
             if keep_dir:
                 os.makedirs(os.path.join(keep_dir, db_id), exist_ok=True)
+                for _stale in glob.glob(os.path.join(keep_dir, db_id, f"{year_str}-[0-9][0-9].parquet")):   # monthly parts of an earlier run
+                    os.remove(_stale)
                 shutil.copyfile(parquet_filename, os.path.join(keep_dir, db_id, f"{year_str}.parquet"))
             # Cleanup local temporary file
             os.remove(parquet_filename)
