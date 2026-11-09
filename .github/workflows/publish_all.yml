@@ -16,8 +16,8 @@ on:
         type: boolean
         default: true
       max_file_mb:
-        description: 'A year bigger than this many MB is split in monthly CSV files'
-        default: '40'
+        description: 'A year bigger than this many MB is split in monthly files (CSV and the saved Parquet copy), so GitHub never refuses a file'
+        default: '45'
   workflow_run:
     workflows: ["Daily NSE Fetcher"]
     types: [completed]
@@ -76,6 +76,12 @@ jobs:
           PARQUET_DIR: ${{ runner.temp }}/parquet
         run: python backend/convert.py
 
+      - name: Split big saved Parquet years in monthly files (repository copy only; R2 keeps whole years)
+        env:
+          PARQUET_DIR: ${{ runner.temp }}/parquet
+          MAX_MB: ${{ inputs.max_file_mb }}
+        run: python backend/pack_parquet.py --db nse --max-mb "${MAX_MB:-45}"
+
       - name: Export CSV for AmiBroker from the SAME Parquet files (no R2 download)
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.csv_export }}
         env:
@@ -83,7 +89,7 @@ jobs:
           MAX_MB: ${{ inputs.max_file_mb }}
         run: |
           set -o pipefail
-          python backend/export_csv.py --source parquet --db nse --out "$RUNNER_TEMP/csv" --split-mb "${MAX_MB:-40}" 2>&1 | tee export.log
+          python backend/export_csv.py --source parquet --db nse --out "$RUNNER_TEMP/csv" --split-mb "${MAX_MB:-45}" 2>&1 | tee export.log
 
       - name: Check CSV (made from the saved Parquet) = the databases rebuilt independently
         if: ${{ github.event_name != 'workflow_dispatch' || inputs.csv_export }}
