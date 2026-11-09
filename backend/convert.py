@@ -4,6 +4,7 @@ import sys
 import json
 import glob
 import datetime
+import shutil
 import sqlite3
 import pandas as pd
 import pyarrow as pa
@@ -131,6 +132,12 @@ def convert_and_upload(db_files):
             print(f"Uploading {parquet_filename} to Cloudflare R2 as {r2_key}...")
             s3_client.upload_file(parquet_filename, BUCKET_NAME, r2_key)
 
+            # PARQUET_DIR: keep the very file that was just uploaded, so the AmiBroker CSV and the repository copy are made from these exact bytes
+            # (no download from R2 needed). Layout: $PARQUET_DIR/<db>/<year>.parquet
+            keep_dir = os.getenv("PARQUET_DIR")
+            if keep_dir:
+                os.makedirs(os.path.join(keep_dir, db_id), exist_ok=True)
+                shutil.copyfile(parquet_filename, os.path.join(keep_dir, db_id, f"{year_str}.parquet"))
             # Cleanup local temporary file
             os.remove(parquet_filename)
             print(f"Successfully converted and uploaded {r2_key}!")

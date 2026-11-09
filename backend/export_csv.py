@@ -4,6 +4,9 @@ files the web app reads from R2: the same rows (same filters and name denylist a
 adjustment already stored in the .db files, and the same cash-dividend adjustment that convert.py applies while converting.
 Because it uses convert.py's own reader and adjuster, a change there changes both places the same way.
 
+SOURCE  --source r2  (used by Publish ALL) reads the yearly Parquet files that were just uploaded to R2 (<db>/<year>.parquet) and writes the CSV from them,
+so the CSV is made from the very bytes the web app's data comes from. --source db (default, no internet needed) rebuilds the same rows from the .db files.
+
   python backend/export_csv.py [--db nse] [--from-year 2000] [--to-year 2026] [--out export] [--split-mb 40] [--zip]
 
 Writes into --out:   <db>_<year>.csv (one per year; a year bigger than --split-mb MB is written as one file per month: <db>_<year>-<month>.csv),
@@ -26,6 +29,7 @@ import dividends
 import splits
 import convert
 
+SOURCE_R2 = [False]
 COLUMNS = ["Ticker", "Date", "Open", "High", "Low", "Close", "Volume", "Delivery", "DeliveryPct"]
 MAX_FILE_BYTES = 95e6                      # GitHub refuses files over 100 MB
 
@@ -80,6 +84,46 @@ def read_year(db_file):
     return df.sort_values(["symbol", "date"]).reset_index(drop=True)
 
 
+def r2_client():
+    import boto3
+    need = ("R2_ACCESS_KEY_ID", "R2_SECRET_ACCESS_KEY", "R2_ENDPOINT_URL")
+    miss = [k for k in need if not os.getenv(k)]
+    if miss:
+        raise SystemExit(f"--source r2 needs the environment variables {', '.join(miss)}")
+    return boto3.client("s3", endpoint_url=os.environ["R2_ENDPOINT_URL"], aws_access_key_id=os.environ["R2_ACCESS_KEY_ID"],
+                        aws_secret_access_key=os.environ["R2_SECRET_ACCESS_KEY"], region_name="auto")
+
+
+def r2_year_files(s3, db_id, bucket=None):
+    """[(year, key)] of the yearly Parquet files in the bucket."""
+    bucket = bucket or convert.BUCKET_NAME
+    out, token = [], None
+    while True:
+        kw = dict(Bucket=bucket, Prefix=f"{db_id}/")
+        if token:
+            kw["ContinuationToken"] = token
+        r = s3.list_objects_v2(**kw)
+        for o in r.get("Contents", []):
+            m = re.match(rf"^{re.escape(db_id)}/(\d{{4}})\.parquet$", o["Key"])
+            if m:
+                out.append((int(m.group(1)), o["Key"]))
+        if not r.get("IsTruncated"):
+            return sorted(out)
+        token = r.get("NextContinuationToken")
+
+
+def read_year_r2(s3, key, bucket=None):
+    """One yearly Parquet file as the web app receives it (already adjusted: nothing is recomputed here)."""
+    import tempfile
+    import pyarrow.parquet as pq
+    bucket = bucket or convert.BUCKET_NAME
+    with tempfile.TemporaryDirectory() as tmp:
+        local = os.path.join(tmp, "y.parquet")
+        s3.download_file(bucket, key, local)
+        df = pq.read_table(local).to_pandas()
+    return df.sort_values(["symbol", "date"]).reset_index(drop=True)
+
+
 def to_csv_frame(df):
     vol = pd.to_numeric(df["volume"], errors="coerce")
     pct = (df["delivery"] / vol.where(vol > 0) * 100).round(2)          # empty when delivery or volume is unknown
@@ -93,14 +137,14 @@ def to_csv_frame(df):
     return out[COLUMNS]
 
 
-def export(db_id, db_files, out_dir, from_year=None, to_year=None, split_mb=40):
+def export(db_id, db_files, out_dir, from_year=None, to_year=None, split_mb=40, reader=None):
     """One CSV per year; a year bigger than split_mb MB becomes one file per month (GitHub warns at 50 MB and refuses 100 MB)."""
     os.makedirs(out_dir, exist_ok=True)
     report, written, years = [], [], []
     for year, path in db_files:
         if (from_year and year < from_year) or (to_year and year > to_year):
             continue
-        df = read_year(path)
+        df = (reader or read_year)(path)
         if df.empty:
             report.append(f"{year}: empty, skipped")
             continue
@@ -130,7 +174,7 @@ def package(db_id, out_dir, written, years, report, make_zip=False):
     fmt = f"{db_id}_eod.format"
     open(os.path.join(out_dir, fmt), "w", newline="\r\n").write(FORMAT_FILE)
     open(os.path.join(out_dir, "IMPORT_README.txt"), "w", newline="\r\n").write(README.format(db=db_id, stamp=stamp, first_year=min(years)))
-    adj = "cash dividends + manual splits (manual_splits.csv) applied" if convert.ADJ else "NO dividend adjustment (DIVIDEND_ADJUST=false or no dividends.csv)"
+    adj = "read from the yearly Parquet files that were uploaded to R2 (identical to the web app data)" if SOURCE_R2[0] else "cash dividends + manual splits (manual_splits.csv) applied" if convert.ADJ else "NO dividend adjustment (DIVIDEND_ADJUST=false or no dividends.csv)"
     open(os.path.join(out_dir, "export-report.txt"), "w", newline="\r\n").write(
         f"{db_id} export, {stamp}\nPrices: split/bonus/rights/demerger adjusted (stored in the .db files) + {adj}\n\n" + "\n".join(report) + "\n")
     if not make_zip:
@@ -147,16 +191,38 @@ def main(argv=None):
     ap.add_argument("--db", default="nse"); ap.add_argument("--from-year", type=int); ap.add_argument("--to-year", type=int)
     ap.add_argument("--out", default="export"); ap.add_argument("--split-mb", type=float, default=40.0); ap.add_argument("--zip", action="store_true")
     ap.add_argument("--db-dir", default=os.getenv("DB_DIR", "data/databases"))
+    ap.add_argument("--source", choices=("db", "parquet", "r2"), default="db", help="parquet = read the yearly Parquet files saved by convert.py (PARQUET_DIR): the same files that went to R2; r2 = download them from R2")
+    ap.add_argument("--parquet-dir", default=os.getenv("PARQUET_DIR", "parquet"))
     a = ap.parse_args(argv)
-    files = []
-    for p in sorted(glob.glob(os.path.join(a.db_dir, f"{a.db}_[0-9][0-9][0-9][0-9].db"))):
-        m = re.match(rf"^{re.escape(a.db)}_(\d{{4}})\.db$", os.path.basename(p))
-        if m:
-            files.append((int(m.group(1)), p))
-    if not files:
-        print(f"No {a.db}_<year>.db files in {a.db_dir}"); return 1
-    convert.ADJ = splits.chain(dividends.build_adjuster(a.db_dir), splits.build_adjuster(a.db_dir))                    # the same adjuster convert.py builds
-    written, years, report = export(a.db, files, a.out, a.from_year, a.to_year, a.split_mb)
+    reader = None
+    if a.source == "parquet":
+        base = os.path.join(a.parquet_dir, a.db)
+        files = sorted((int(m.group(1)), os.path.join(base, f)) for f in (os.listdir(base) if os.path.isdir(base) else [])
+                       if (m := re.match(r"^(\d{4})\.parquet$", f)))
+        if not files:
+            print(f"No {a.db}/<year>.parquet files in {a.parquet_dir}. Run Publish ALL once with 'force_all' on."); return 1
+        import pyarrow.parquet as pq
+        reader = lambda path: pq.read_table(path).to_pandas().sort_values(["symbol", "date"]).reset_index(drop=True)
+        convert.ADJ = None; SOURCE_R2[0] = True
+        print(f"[SOURCE] saved Parquet files: {len(files)} years ({files[0][0]}..{files[-1][0]}); no adjustment is recomputed")
+    elif a.source == "r2":
+        s3 = r2_client()
+        files = r2_year_files(s3, a.db)
+        if not files:
+            print(f"No {a.db}/<year>.parquet files on R2"); return 1
+        reader = lambda key: read_year_r2(s3, key)
+        convert.ADJ = None; SOURCE_R2[0] = True
+        print(f"[SOURCE] R2: {len(files)} yearly Parquet files ({files[0][0]}..{files[-1][0]}); no adjustment is recomputed")
+    else:
+        files = []
+        for p in sorted(glob.glob(os.path.join(a.db_dir, f"{a.db}_[0-9][0-9][0-9][0-9].db"))):
+            m = re.match(rf"^{re.escape(a.db)}_(\d{{4}})\.db$", os.path.basename(p))
+            if m:
+                files.append((int(m.group(1)), p))
+        if not files:
+            print(f"No {a.db}_<year>.db files in {a.db_dir}"); return 1
+        convert.ADJ = splits.chain(dividends.build_adjuster(a.db_dir), splits.build_adjuster(a.db_dir))                    # the same adjuster convert.py builds
+    written, years, report = export(a.db, files, a.out, a.from_year, a.to_year, a.split_mb, reader)
     if not written:
         print("Nothing exported (check the year range)."); return 1
     zip_path = package(a.db, a.out, written, years, report, a.zip)
