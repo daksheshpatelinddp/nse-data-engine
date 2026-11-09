@@ -30,6 +30,7 @@ import pandas as pd
 SPLIT_FILE = os.getenv("SPLIT_FILE") or os.path.join("data", "corporate_actions", "manual_splits.csv")
 CHECK = os.getenv("SPLIT_CHECK", "true").lower() != "false"
 PRICE_DECIMALS = 4
+ALGORITHM = f"adj-v2-round{PRICE_DECIMALS}"   # part of the data fingerprint: change it whenever the adjustment math changes, so R2 packs and every cache get new names
 ADJUST_VOLUME = os.getenv("SPLIT_ADJUST_VOLUME", "true").lower() != "false"
 PRICE_COLS = ("open", "high", "low", "close")
 
@@ -109,7 +110,7 @@ class SplitAdjuster:
             self.by_symbol.setdefault(s, []).append((d, f))
         for v in self.by_symbol.values():
             v.sort()
-        self.signature = hashlib.sha1(";".join(f"{s}|{d}|{f:.10g}" for s, d, f, n in sorted(events)).encode()).hexdigest()[:16] if events else ""
+        self.signature = hashlib.sha1((ALGORITHM + ";" + ";".join(f"{s}|{d}|{f:.10g}" for s, d, f, n in sorted(events))).encode()).hexdigest()[:16] if events else ""
 
     def adjust(self, df):
         """Copy of a frame (symbol, date 'YYYY-MM-DD', open, high, low, close, volume, delivery ...) with the events applied. Indices are not touched."""
