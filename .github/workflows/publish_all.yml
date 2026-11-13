@@ -8,7 +8,7 @@ on:
   workflow_dispatch:
     inputs:
       force_all:
-        description: 'Rebuild ALL history on R2 (use after changing manual_splits.csv, dividends or any adjustment). Daily runs leave it off.'
+        description: 'Rebuild ALL history on R2 (use after changing manual_splits.csv, dividends or any adjustment). The automatic run after the daily fetch ALWAYS rebuilds everything, so prices, splits and dividends stay identical to a fresh AmiBroker import.'
         type: boolean
         default: true
       csv_export:
@@ -54,7 +54,7 @@ jobs:
       - name: Restore the saved Parquet files (branch parquet-data)
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          FORCE: ${{ github.event_name == 'workflow_dispatch' && inputs.force_all && 'true' || 'false' }}
+          FORCE: ${{ (github.event_name != 'workflow_dispatch' || inputs.force_all) && 'true' || 'false' }}
         run: |
           set -e
           URL="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
@@ -72,7 +72,7 @@ jobs:
           R2_ACCESS_KEY_ID: ${{ secrets.R2_ACCESS_KEY_ID }}
           R2_SECRET_ACCESS_KEY: ${{ secrets.R2_SECRET_ACCESS_KEY }}
           R2_ENDPOINT_URL: ${{ secrets.R2_ENDPOINT_URL }}
-          FORCE_ALL: ${{ github.event_name == 'workflow_dispatch' && inputs.force_all && 'true' || 'false' }}
+          FORCE_ALL: ${{ (github.event_name != 'workflow_dispatch' || inputs.force_all) && 'true' || 'false' }}
           PARQUET_DIR: ${{ runner.temp }}/parquet
         run: python backend/convert.py
 
@@ -128,7 +128,7 @@ jobs:
           git -c http.postBuffer=524288000 push --force origin csv-export
           {
             echo "### Publish ALL"
-            echo "R2 rebuilt (the same Parquet files are saved on branch parquet-data) with FORCE_ALL=${{ github.event_name == 'workflow_dispatch' && inputs.force_all }}; CSV files: $(ls *.csv | wc -l)"
+            echo "R2 rebuilt (the same Parquet files are saved on branch parquet-data) with FORCE_ALL=${{ github.event_name != 'workflow_dispatch' || inputs.force_all }}; CSV files: $(ls *.csv | wc -l)"
             echo ""
             echo "**Download on your laptop:** https://github.com/${GITHUB_REPOSITORY}/archive/refs/heads/csv-export.zip"
             echo '```'
