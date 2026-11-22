@@ -169,6 +169,13 @@ def chain(*parts):
 
 def build_adjuster(db_dir, path=None):
     events = read_events(path)
+    if path is None and os.getenv("BSE_ACTIONS", "true").lower() != "false":
+        try:
+            import bse_actions                              # split / bonus lines of any BSE csv whose fall is still in the prices
+            have = {(s, d) for s, d, f, n in events}
+            events += [e for e in bse_actions.events(db_dir) if (e[0], e[1]) not in have]
+        except Exception as e:
+            print(f"[SPLITS] BSE files not used: {e}")
     if not events:
         print("[SPLITS] no manual splits (data/corporate_actions/manual_splits.csv is missing or empty)")
         return SplitAdjuster([])
