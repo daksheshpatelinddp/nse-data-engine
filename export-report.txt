@@ -1,0 +1,30 @@
+nse export, 2026-11-27 23:07 UTC
+Prices: split/bonus/rights/demerger adjusted (stored in the .db files) + read from the yearly Parquet files that were uploaded to R2 (identical to the web app data)
+
+2000:   233475 rows,  1260 symbols, 2000-01-03 .. 2000-12-29, sum of closes 22,021,460.10
+2001:   204073 rows,  1039 symbols, 2001-01-01 .. 2001-12-31, sum of closes 10,578,822.75
+2002:   190973 rows,   952 symbols, 2002-01-01 .. 2002-12-31, sum of closes 9,781,585.34
+2003:   178492 rows,   819 symbols, 2003-01-01 .. 2003-12-31, sum of closes 9,765,948.56
+2004:   194207 rows,   849 symbols, 2004-01-01 .. 2004-12-31, sum of closes 14,646,332.75
+2005:   209196 rows,   922 symbols, 2005-01-03 .. 2005-12-30, sum of closes 22,689,431.16
+2006:   229851 rows,  1047 symbols, 2006-01-02 .. 2006-12-29, sum of closes 30,207,414.32
+2007:   275969 rows,  1234 symbols, 2007-01-02 .. 2007-12-31, sum of closes 43,531,047.43
+2008:   302122 rows,  1304 symbols, 2008-01-01 .. 2008-12-31, sum of closes 39,778,256.42
+2009:   306857 rows,  1341 symbols, 2009-01-01 .. 2009-12-31, sum of closes 31,726,396.07
+2010:   347523 rows,  1494 symbols, 2010-01-04 .. 2010-12-31, sum of closes 53,988,858.58
+2011:   363557 rows,  1574 symbols, 2011-01-03 .. 2011-12-30, sum of closes 51,349,829.21
+2012:   380195 rows,  1634 symbols, 2012-01-02 .. 2012-12-31, sum of closes 79,655,836.36
+2013:   359413 rows,  1640 symbols, 2013-01-01 .. 2013-12-31, sum of closes 90,283,290.66
+2014:   374615 rows,  1643 symbols, 2014-01-01 .. 2014-12-31, sum of closes 126,398,688.56
+2015:   380259 rows,  1736 symbols, 2015-01-01 .. 2015-12-31, sum of closes 169,241,849.50
+2016:   398043 rows,  1792 symbols, 2016-01-01 .. 2016-12-30, sum of closes 193,315,404.13
+2017:   412186 rows,  1789 symbols, 2017-01-02 .. 2017-12-29, sum of closes 256,594,722.06
+2018:   420420 rows,  1805 symbols, 2018-01-01 .. 2018-12-31, sum of closes 295,830,877.49
+2019:   420177 rows,  1833 symbols, 2019-01-01 .. 2019-12-31, sum of closes 279,841,419.66
+2020:   434495 rows,  1887 symbols, 2020-01-01 .. 2020-12-31, sum of closes 294,513,034.15
+2021:   455425 rows,  2035 symbols, 2021-01-01 .. 2021-12-31, sum of closes 456,405,327.77
+2022:   498513 rows,  2183 symbols, 2022-01-03 .. 2022-12-30, sum of closes 528,621,187.20
+2023:   522525 rows,  2344 symbols, 2023-01-02 .. 2023-12-29, sum of closes 616,883,999.33
+2024:   570347 rows,  2494 symbols, 2024-01-01 .. 2024-12-31, sum of closes 952,384,937.09
+2025:   621380 rows,  2736 symbols, 2025-01-01 .. 2025-12-31, sum of closes 1,061,317,607.42  [12 monthly files]
+2026:   639296 rows,  3204 symbols, 2026-01-01 .. 2026-11-27, sum of closes 1,071,210,007.92  [11 monthly files]
